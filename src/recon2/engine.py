@@ -338,6 +338,7 @@ class Engine:
 
     def line(self, line: Line) -> Decision:
         d = Decision(line.txn)
+        self.res.line_calls = 0  # per-line subset budget (resolve.LINE_SUBSET_CALLS)
         tr = d.trace
         # 1. treasury (final)
         if self.treasury is not None:

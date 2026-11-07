@@ -19,6 +19,7 @@ WHT_RATES = {"BR01": (150, 1000), "MA01": (150, 1000), "MX01": (125, 1000)}
 FANOUT = 250
 SUB_CANDS, SUB_PICKS, SUB_STATES = 40, 12, 200_000
 BITSET_MAX = 20_000_000  # cents; above this the bounded dict DP is used
+LINE_SUBSET_CALLS = 24  # deterministic per-line work budget (LIVE key accounts blew up to 9 s/line)
 
 MONTHS = {}
 for i, names in enumerate([
@@ -603,6 +604,11 @@ def _subset_exact(vals: list[int], target: int, max_picks: int, res: Resolver | 
     """Indices of a subset of vals summing exactly to target (smallest, earliest), bounded."""
     if target <= 0 or not vals:
         return None
+    if res is not None:
+        res.line_calls = getattr(res, "line_calls", 0) + 1
+        if res.line_calls > LINE_SUBSET_CALLS:
+            res.capped = getattr(res, "capped", 0) + 1
+            return None
     vals = vals[:SUB_CANDS]
     if target <= BITSET_MAX:
         # reachability as a big-int bitset (one shift per value), backtrack over prefixes

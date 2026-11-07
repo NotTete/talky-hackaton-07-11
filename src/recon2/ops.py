@@ -28,6 +28,8 @@ MAX_GROUPS = 80
 
 _TOKEN = re.compile(r"[A-Z0-9][A-Z0-9/\-]{4,}")
 _COUNT = re.compile(r"\b(\d{1,4}) (?:RECIBOS|PROVEEDORES|OPERATIONS|POSTEN|CHQ|OP|TRX|ITEMS|TRANSFERS)\b")
+_RUN_REF = re.compile(r"\b(PR\d{10,14})-0?\b")
+_SEQ6 = re.compile(r"\b(\d{6})\s*$")
 _MID = re.compile(r"(?<!\d)(\d{9})(?!\d)")
 
 
@@ -201,6 +203,13 @@ class Ops:
         for tok in tokens_of(text):
             for op, grp in self.by_key.get(tok, ()):
                 hits.append((len(tok), op, grp))
+        # Spanish N43 run debits: ref2 holds the truncated run id ("PR..-0"), the trailing
+        # 6-digit token of the text is the sequence -> group key "<run>-<seq:04d>".
+        m = _RUN_REF.search(f"{line.ref2} {line.e2e or ''}")
+        sq = _SEQ6.search((line.text or "").strip())
+        if m and sq:
+            for op, grp in self.by_key.get(f"{m[1]}-{int(sq[1]):04d}", ()):
+                hits.append((99, op, grp))
         hits.sort(key=lambda h: (-h[0], h[1].kind, h[1].oid, h[2] or ""))
         seen, out = set(), []
         for _, op, grp in hits:
