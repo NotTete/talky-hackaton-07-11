@@ -198,25 +198,24 @@ class Engine:
         return self._rows_from_advice(advice, ctx)
 
     def _advice_by_party(self, ctx: _Context) -> list[Row]:
-        if not ctx.party:
-            return []
-        advice = self.advices.by_party_total(ctx.party, abs(ctx.cash), ctx.ymd, _tol(ctx.cash))
-        if advice is None:
-            return []
-        return self._rows_from_advice(advice, ctx)
+        for party_id in ctx.parties:
+            advice = self.advices.by_party_total(party_id, abs(ctx.cash), ctx.ymd, _tol(ctx.cash))
+            if advice is not None:
+                return self._rows_from_advice(advice, ctx)
+        return []
 
     # -------------------------------------------------------------- step 5
     def _by_reference(self, ctx: _Context) -> list[Row]:
         """Invoice numbers named in the bank text (POLICIES §5.5), incl. continuations."""
         found: list[tuple[str, int, str]] = []
         seen: set[str] = set()
-        scope = self.ledger.party_items(ctx.party) if ctx.party else []
+        scope = ctx.scope(self.ledger)
         for token in ctx.tokens:
             for item_id in self._resolve_doc(token, scope, ctx):
                 if item_id in seen:
                     continue
                 item = self.ledger.item(item_id)
-                if ctx.party and item["party_id"] != ctx.party and len(ctx.tokens) > 1:
+                if ctx.parties and item["party_id"] not in ctx.parties and len(ctx.tokens) > 1:
                     continue
                 seen.add(item_id)
                 found.append((item_id, 0, "INVOICE"))
@@ -233,7 +232,7 @@ class Engine:
         side = ctx.side
         candidates = [
             i
-            for i in (self.ledger.party_items(ctx.party) if ctx.party else [])
+            for i in ctx.scope(self.ledger)
             if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == side
         ]
         if not candidates:
@@ -262,22 +261,21 @@ class Engine:
         Credit notes net against the invoices, exactly as in `_share`.
         """
         cash = abs(ctx.cash)
-        if not ctx.party or not cash:
-            return []
-        open_items = [
-            i
-            for i in self.ledger.party_items(ctx.party)
-            if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == ctx.side
-        ]
-        if len(open_items) < 2:
+        if not cash:
             return []
         sign = {"invoice": 1, "credit_note": -1}
-        total = sum(
-            sign.get(self.ledger.item(i)["kind"], 1) * self.ledger.open_cents(i) for i in open_items
-        )
-        if abs(total - cash) > _tol(cash):
-            return []
-        return self._rows_from_docs([(i, 0, "INVOICE") for i in open_items], ctx, amounts_known=False)
+        for party_id in ctx.parties:
+            open_items = [
+                i
+                for i in self.ledger.party_items(party_id)
+                if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == ctx.side
+            ]
+            if len(open_items) < 2:
+                continue
+            total = sum(sign.get(self.ledger.item(i)["kind"], 1) * self.ledger.open_cents(i) for i in open_items)
+            if abs(total - cash) <= _tol(cash):
+                return self._rows_from_docs([(i, 0, "INVOICE") for i in open_items], ctx, amounts_known=False)
+        return []
 
     # ------------------------------------------------------------- plumbing
     def _expand(self, entries: list[dict], ctx: _Context) -> list[tuple[str, int, str]]:
@@ -311,13 +309,22 @@ class Engine:
             hit = self.ledger.by_doc(token)
             if hit:
                 return hit
+        scope_set = set(scope)
+        for token in refs.extract(ref) or [alnum(ref)]:
+            # Our prefix dropped: "FRAS 0414882" for FV25-0414882.
+            hit = self._narrow(self.ledger.by_doc_suffix(token), scope_set, ctx)
+            if hit:
+                return hit
+            if len(token) >= 6:
+                hit = self._narrow(
+                    [i for i in scope if refs.digits(self.ledger.item(i)["doc_alnum"]).endswith(refs.digits(token))],
+                    scope_set,
+                    ctx,
+                )
+                if hit:
+                    return hit
         if scope:
             for token in refs.extract(ref) or [alnum(ref)]:
-                tail = refs.digits(token)
-                if len(tail) >= 5:
-                    hit = [i for i in scope if refs.digits(self.ledger.item(i)["doc_alnum"]).endswith(tail)]
-                    if len(hit) == 1:
-                        return hit
                 hit = self.ledger.by_doc_fuzzy(token, scope)
                 if len(hit) == 1:
                     return hit
@@ -332,6 +339,32 @@ class Engine:
                     exact = [i for i in scoped if abs(self.ledger.open_cents(i) - abs(ctx.cash)) <= _tol(ctx.cash)]
                     if len(exact) == 1:
                         return exact
+        return []
+
+    def _narrow(self, hits: list[str], scope: set[str], ctx: _Context) -> list[str]:
+        """Pick one item out of an ambiguous lookup, using everything else we know.
+
+        In order: the payer's own items, then an item whose open balance *is* the cash,
+        then the side of the book. If none of that singles one out, return nothing — a
+        coin flip here costs a false pair and a false line.
+        """
+        if not hits:
+            return []
+        if len(hits) == 1:
+            return hits
+        if scope:
+            inside = [i for i in hits if i in scope]
+            if len(inside) == 1:
+                return inside
+            if inside:
+                hits = inside
+        if ctx is not None:
+            exact = [i for i in hits if abs(self.ledger.open_cents(i) - abs(ctx.cash)) <= _tol(ctx.cash)]
+            if len(exact) == 1:
+                return exact
+            sided = [i for i in hits if self.ledger.item(i)["side"] == ctx.side]
+            if len(sided) == 1:
+                return sided
         return []
 
     def _rows_from_docs(
@@ -423,7 +456,7 @@ class Engine:
 
     def _rows_from_advice(self, advice, ctx: _Context) -> list[Row]:
         docs: list[tuple[str, int, str]] = []
-        scope = self.ledger.party_items(ctx.party) if ctx.party else []
+        scope = ctx.scope(self.ledger)
         for line in advice.lines:
             item_id = next(iter(self._resolve_doc(line.document, scope, ctx)), "")
             if not item_id:
@@ -441,7 +474,7 @@ class _Context:
     """Everything derived from one bank line, computed once."""
 
     __slots__ = ("txn", "text", "tokens", "op_tokens", "cash", "ymd", "party", "side",
-                 "reasons", "deductions", "want_count")
+                 "reasons", "deductions", "want_count", "parties", "_scope")
 
     def __init__(self, txn: dict, engine: Engine):
         self.txn = txn
@@ -466,18 +499,44 @@ class _Context:
         count = _COUNT_RE.search(self.text)
         self.want_count = int(count.group(1)) if count else 0
 
+        self._scope: list[str] | None = None
         owner = engine.ledger.party_for_iban(txn.get("counterparty_account") or "")
-        self.party = owner[0] if owner else engine.ledger.party_for_name(txn.get("counterparty_name") or "")
-        if not self.party:
-            self.party = engine.ledger.party_for_name(_payer_from_text(self.text))
+        if owner:
+            # A known paying IBAN is an identity, not a guess (POLICIES §5.1).
+            self.parties = [owner[0]]
+        else:
+            self.parties = engine.ledger.parties_for_name(txn.get("counterparty_name") or "")
+            if not self.parties:
+                self.parties = engine.ledger.parties_for_name(_payer_from_text(self.text))
+            if not self.parties:
+                # n43 puts the payer anywhere in the body ("92844359-AGUAS BLUE S.A.");
+                # the whole text is a worse name but a better net, and every consumer of
+                # a party here is gated on the amount adding up.
+                self.parties = engine.ledger.parties_for_name(self.text)
+        self.party = self.parties[0] if self.parties else ""
+
+    def scope(self, ledger) -> list[str]:
+        """The items of every shortlisted party: the search space for a noisy reference."""
+        if self._scope is None:
+            out: list[str] = []
+            for party_id in self.parties:
+                out.extend(ledger.party_items(party_id))
+            self._scope = out
+        return self._scope
 
 
 _COUNT_RE = __import__("re").compile(r"\b(\d{1,4})\s+(?:PROVEEDORES|RECIBOS|POSTEN|OPERATIONS|OPERACIONES|ITEMS|EFFETS)")
 
 
+_PAYER_MARKERS = (
+    "TRANSFERENCIA DE ", "TRANSFERENCIAS ", "ORD. ", "ORDENANTE ", " AN ", "/ORDP/",
+    "ABWA+", "VIREMENT DE ", "VON ", "DE LA PART DE ",
+)
+
+
 def _payer_from_text(text: str) -> str:
     """n43 lines put the payer in the body: 'TRANSFERENCIA DE <name>', 'ORD. <name>'."""
-    for marker in ("TRANSFERENCIA DE ", "TRANSFERENCIAS ", "ORD. ", "ORDENANTE ", " AN ", "/ORDP/"):
+    for marker in _PAYER_MARKERS:
         if marker in text:
             tail = text.split(marker, 1)[1]
             return tail.split("|")[0][:60]

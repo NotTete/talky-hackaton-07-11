@@ -26,6 +26,9 @@ from .refs import digits, variants
 
 # A prefix query below this length matches half the ledger; it is noise, not evidence.
 MIN_PREFIX = 7
+# A suffix needs to be longer to be evidence: document numbers share their tail far more
+# often than their head (same year, same series, consecutive numbering).
+MIN_SUFFIX = 6
 # Above this many candidates a prefix/party query stops being evidence (CLAUDE.md §11b).
 MAX_FANOUT = 400
 
@@ -72,6 +75,12 @@ class Ledger:
         self._amounts = sorted(self._by_amount)
         # Prefix queries: one sorted key list, bisect for the [token, token+1) range.
         self._doc_keys = sorted(self._by_doc)
+        # Suffix queries are the same bisect on reversed keys. A bank text drops our
+        # prefix far more often than it truncates the number ("FRAS 0414882" for
+        # FV25-0414882, "RE 108031" for RE250108031), and the dropped part is not a
+        # fixed string, so neither an exact key nor a prefix finds it. One reversed copy
+        # of the key list costs a list of strings and answers every tail length.
+        self._doc_keys_rev = sorted(key[::-1] for key in self._doc_keys)
 
         # Items of a party, oldest first — FIFO is the documented tie-break (§5.6).
         for ids in self._by_party.values():
@@ -107,6 +116,22 @@ class Ledger:
                 return []
         return out
 
+    def by_doc_suffix(self, token: str) -> list[str]:
+        """Items whose document number *ends with* `token` (our prefix was dropped)."""
+        key = alnum(token)
+        if len(key) < MIN_SUFFIX:
+            return []
+        needle = key[::-1]
+        lo = bisect.bisect_left(self._doc_keys_rev, needle)
+        out: list[str] = []
+        for candidate in self._doc_keys_rev[lo : lo + 64]:
+            if not candidate.startswith(needle):
+                break
+            out.extend(self._by_doc[candidate[::-1]])
+            if len(out) > MAX_FANOUT:
+                return []
+        return out
+
     def by_doc_fuzzy(self, token: str, scope: list[str]) -> list[str]:
         """Items in `scope` whose document number is one transposition/typo away.
 
@@ -127,24 +152,36 @@ class Ledger:
     def party_for_iban(self, iban: str) -> tuple[str, str] | None:
         return self.masters.iban_owner.get(alnum(iban))
 
-    def party_for_name(self, text: str) -> str:
-        """Best party id for a (possibly truncated) counterparty name, or ''."""
+    def parties_for_name(self, text: str, limit: int = 6) -> list[str]:
+        """Every party whose name is compatible with a (truncated) bank text, best first.
+
+        Returning a *list* is the point. The masters are full of near-duplicates ("Riegos
+        Villamar del Rio S.L." and three siblings), and a statement that prints
+        "TRANSFERENCIAS RIEGOS VILLAMAR DEL RI" cannot distinguish them. Committing to the
+        single best-scoring name picks the wrong customer often enough to lose the line;
+        handing the shortlist to the amount and reference tests lets the evidence decide.
+        """
         tokens = name_tokens(text)
         if not tokens:
-            return ""
+            return []
         votes: dict[str, int] = defaultdict(int)
         for token in tokens:
             for party_id in self._party_tokens.get(token, ()):
                 votes[party_id] += 1
         if not votes:
-            return ""
-        best, best_key = "", (0.0, 0, "")
+            return []
+        scored = []
         for party_id, hits in votes.items():
             similarity = name_similarity(tokens, name_tokens(self.masters.party_names.get(party_id, "")))
-            key = (similarity, hits, party_id)
-            if key > best_key:
-                best, best_key = party_id, key
-        return best if best_key[0] >= 0.6 else ""
+            if similarity >= 0.6:
+                scored.append((-similarity, -hits, party_id))
+        scored.sort()
+        return [party_id for _, _, party_id in scored[:limit]]
+
+    def party_for_name(self, text: str) -> str:
+        """Best party id for a (possibly truncated) counterparty name, or ''."""
+        hits = self.parties_for_name(text, limit=1)
+        return hits[0] if hits else ""
 
     def party_items(self, party_id: str) -> list[str]:
         return self._by_party.get(party_id, [])
