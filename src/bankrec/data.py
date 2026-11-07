@@ -63,6 +63,30 @@ def read_optional(path: Path, columns: list[str] | None = None) -> pl.DataFrame:
     return read_table(path, columns) if path.exists() else pl.DataFrame()
 
 
+def _file_month(name: str) -> int:
+    """`ES01_202505_1.csv` -> 202505; 0 when the name carries no month."""
+    for part in name.split(".")[0].split("_"):
+        if len(part) == 6 and part.isdigit():
+            return int(part)
+    return 0
+
+
+def _month_window(names: list[str], months_back: int) -> set[int]:
+    """The months this phase covers, plus `months_back` before the first of them."""
+    months = sorted({m for n in names if (m := _file_month(n))})
+    if not months:
+        return set()
+    latest = months[-1]
+    year, month = divmod(months[0] - 1, 100)
+    out = set()
+    for _ in range(months_back):
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+        out.add(year * 100 + month)
+    return out | {m for m in months if m <= latest}
+
+
 def _alnum(value: str) -> str:
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
@@ -331,16 +355,39 @@ class Phase:
         return Masters(self.settings.data_dir / "masters")
 
     # ------------------------------------------------------------ documents
-    def documents(self, folder: str) -> pl.DataFrame:
+    def documents(self, folder: str, months_back: int = 0) -> pl.DataFrame:
         """Concatenate a document folder: direct_debit_batches, card_settlements,
-        cheque_deposits, payment_runs (one CSV per entity and month)."""
-        d = self.dir / folder
-        if not d.is_dir():
-            return pl.DataFrame()
-        files = sorted(d.glob("*.csv"))
+        cheque_deposits, payment_runs (one CSV per entity and month).
+
+        `months_back` also pulls the same folder from the *previous* phases. A confirming
+        remittance is executed in one month and debited at maturity 30-90 days later, so
+        the file that lists what a June debit paid lives in the April or May folder of
+        TRAIN; without it those lines have no answer key at all. Files are keyed by name
+        (`ES01_202505_1.csv`), so the phase's own copy always wins over an older one and
+        the window keeps the read bounded.
+        """
+        files: dict[str, Path] = {}
+        roots = [self.dir]
+        if months_back:
+            roots = [
+                self.settings.data_dir / name
+                for name in ("train", "live", "final")
+                if name != self.name and (self.settings.data_dir / name / folder).is_dir()
+            ] + [self.dir]
+        for root in roots:
+            d = root / folder
+            if not d.is_dir():
+                continue
+            for path in sorted(d.glob("*.csv")):
+                files[path.name] = path
         if not files:
             return pl.DataFrame()
-        return pl.concat([read_table(f) for f in files], how="diagonal")
+        chosen = sorted(files.values(), key=lambda p: p.name)
+        if months_back:
+            window = _month_window(sorted(files), months_back)
+            if window:
+                chosen = [p for p in chosen if _file_month(p.name) in window or not _file_month(p.name)]
+        return pl.concat([read_table(f) for f in chosen], how="diagonal")
 
     def golden(self) -> pl.DataFrame:
         """TRAIN/sample labels: bank_txn_id, item_id, amount, category, exception, segment, difficulty."""

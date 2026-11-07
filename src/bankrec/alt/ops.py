@@ -78,6 +78,13 @@ class Operation:
 class Operations:
     """Build once per phase; query per bank line."""
 
+    # Only payment runs look back. A confirming remittance is executed in one month and
+    # debited at maturity up to three months later, so the file naming a June debit can
+    # sit in TRAIN's April folder. Batches, card settlements and cheque deposits are all
+    # same-week operations: pulling their history in adds thousands of long-settled
+    # totals to the amount fallback and costs more than it finds.
+    LOOKBACK_MONTHS = 4
+
     def __init__(self, phase: Phase):
         self.by_key: dict[str, Operation] = {}
         self._by_total: dict[int, list[Operation]] = defaultdict(list)
@@ -90,9 +97,9 @@ class Operations:
         self._totals = sorted(self._by_total)
 
     # ------------------------------------------------------------- building
-    def _add(self, op: Operation) -> None:
+    def _add(self, op: Operation, indexable: bool = True) -> None:
         self.all.append(op)
-        if op.total_cents:
+        if op.total_cents and indexable:
             self._by_total[op.total_cents].append(op)
         for key in op.keys:
             token = alnum(key)
@@ -159,7 +166,7 @@ class Operations:
                                     [str(e.get("cheque_number") or "")]))
 
     def _load_payment_runs(self, phase: Phase) -> None:
-        df = phase.documents("payment_runs")
+        df = phase.documents("payment_runs", months_back=self.LOOKBACK_MONTHS)
         if df.is_empty():
             return
         df = df.with_columns(
@@ -256,47 +263,65 @@ def select(op: Operation, target: int, want_count: int = 0) -> list[dict] | None
 
 # Guard rails for the subset search: a run has a few dozen transfers, not thousands, and
 # an unbounded search would find a coincidental combination before the right one.
-MAX_GROUPS = 64
-MAX_STATES = 60_000
+MAX_GROUPS = 400
+MAX_STATES = 200_000
+MAX_PICK = 6
 
 
 def _subset_sum(amounts: list[int], target: int, tol: int, want_count: int) -> list[int] | None:
     """Indices of the amounts that add up to `target`, preferring `want_count` of them.
 
-    Exact DP over (cardinality, running sum). The cardinality is part of the key because
-    the bank text states it ("3 PROVEEDORES"), and that single hint turns an ambiguous
-    search into a unique answer.
+    Breadth-first over cardinality rather than a flat DP, because the bank text states
+    the cardinality outright ("REMESA CF0100... 3 PROVEEDORES") and that hint both prunes
+    the search and resolves the ambiguity a pure sum match leaves behind. A sum reachable
+    two different ways is refused: on a 173-transfer confirming run, "some combination
+    adds up" is nearly always true and nearly always the wrong combination.
     """
     if not amounts or len(amounts) > MAX_GROUPS or target <= 0:
         return None
-    if sum(amounts) < target - tol:
+    if sum(a for a in amounts if a > 0) < target - tol:
         return None
-    states: dict[tuple[int, int], list[int]] = {(0, 0): []}
-    for index, amount in enumerate(amounts):
-        if amount <= 0:
-            continue
-        for (count, total), picked in list(states.items()):
-            key = (count + 1, total + amount)
-            if key[1] > target + tol or key in states:
+
+    singles = [i for i, a in enumerate(amounts) if abs(a - target) <= tol]
+    if (not want_count or want_count == 1) and len(singles) == 1:
+        return singles
+    if want_count == 1:
+        return None
+
+    limit = want_count if want_count else MAX_PICK
+    level: dict[int, list[int]] = {0: []}
+    ambiguous: set[int] = set()
+    states = 0
+    for depth in range(1, limit + 1):
+        nxt: dict[int, list[int]] = {}
+        for index, amount in enumerate(amounts):
+            if amount <= 0:
                 continue
-            states[key] = [*picked, index]
-            if len(states) > MAX_STATES:
+            for total, picked in level.items():
+                if picked and index <= picked[-1]:
+                    continue
+                reached = total + amount
+                if reached > target + tol:
+                    continue
+                if reached in nxt:
+                    ambiguous.add(reached)
+                    continue
+                nxt[reached] = [*picked, index]
+                states += 1
+            if states > MAX_STATES:
                 return None
-    hits = [(count, picked) for (count, total), picked in states.items()
-            if picked and abs(total - target) <= tol]
-    if not hits:
-        return None
-    if want_count:
-        exact = [p for c, p in hits if c == want_count]
-        if len(exact) == 1:
-            return exact[0]
-        if exact:
-            return None  # ambiguous even with the hint: refuse rather than guess
-    if len(hits) == 1:
-        return hits[0][1]
-    # Several combinations add up: only trust it when they all agree, which happens when
-    # the amounts are duplicated rather than genuinely ambiguous.
-    first = sorted(hits[0][1])
-    return hits[0][1] if all(sorted(p) == first for _, p in hits) else None
+        hits = [(total, picked) for total, picked in nxt.items() if abs(total - target) <= tol]
+        if want_count and depth == want_count:
+            exact = [p for total, p in hits if total not in ambiguous]
+            return exact[0] if len(exact) == 1 else None
+        if not want_count:
+            exact = [p for total, p in hits if total not in ambiguous]
+            if len(exact) == 1:
+                return exact[0]
+        level = nxt
+        if not level:
+            break
+    return None
+
 
 __all__ = ["Operation", "Operations", "select"]
