@@ -16,7 +16,9 @@ experiments/pdf_layout/
 ├── tokens.py        token typing: DATE/AMOUNT/DOCNO/IBAN/LABEL/TEXT… + dictionaries
 ├── fingerprints.py  layout signature + fuzzy similarity + greedy clustering
 ├── companies.py     per entity/type: templates, field rules, support, drift
-├── run.py           the experiment driver (writes out/)
+├── lang.py          language ID (4 methods + fusion) and document-quality flags
+├── run.py           layout experiment driver (writes out/)
+├── run_lang.py      language benchmark + quality census (writes out/lang_*.json)
 └── out/             docs.jsonl, template_rules.json, cross_entity.json, report.txt
 ```
 
@@ -24,6 +26,10 @@ experiments/pdf_layout/
 python experiments/pdf_layout/run.py --phase sample            # 2,298 PDFs, ~2 s
 python experiments/pdf_layout/run.py --phase sample --phase live --limit 2400
 python experiments/pdf_layout/run.py --phase sample --threshold 0.5   # looser families
+
+python experiments/pdf_layout/run_lang.py                     # language benchmark (~2k docs)
+python experiments/pdf_layout/run_lang.py --all-live           # census over all 19k PDFs
+python experiments/pdf_layout/run_lang.py --all-live --census-only   # flags + language mix only
 ```
 
 ## Method (four steps)
@@ -53,6 +59,96 @@ python experiments/pdf_layout/run.py --phase sample --threshold 0.5   # looser f
    column role sequence, totals vocabulary, column count, number style. Clustering is
    greedy with a threshold, per *entity × document type* (an invoice and a bank notice are
    not the same layout).
+
+
+## Language and document quality
+
+`run_lang.py` answers two questions the layout work depends on: **what language is this
+page** (the entity's country is not the answer: CN01 invoices in English, MA01 in French)
+and **is the page long enough to parse at all**.
+
+Ground truth is the entity's country from `masters/entities.csv`, restricted to the
+unambiguous countries (ES/MX→es, PT/BR→pt, FR, IT, DE, NL, GB/US/AU→en, PL); CH, MA and CN
+are multilingual by construction and are reported but not scored. Split is 60/20/20 by
+document (fit / validation / test), and the same test half scores every method.
+
+### Benchmark (8 languages, 336 test documents, ~570 chars each)
+
+| method | accuracy | macro-F1 | ms/doc | note |
+|---|---|---|---|---|
+| stopword dictionaries | 41.7% | 0.136 | **0.07** | unusable here: the text is mostly names, codes and numbers |
+| `langdetect` (1 MB model) | 68.5% | 0.524 | 4.5 | the "ultra light library" is neither accurate nor fast on these stubs |
+| char 4-gram centroid | 95.5% | 0.948 | 0.85 | simplest thing that works |
+| **naive Bayes, char 4-grams** | **95.8%** | 0.957 | **0.39** | 1 ms to fit, no model file |
+| kNN `ball_tree` (sparse) | 96.4% | 0.960 | 2.5 | sklearn silently falls back to brute force: trees cannot index sparse input |
+| kNN `kd_tree` (sparse) | 96.4% | 0.960 | 2.6 | same fallback |
+| kNN `brute` cosine | 96.4% | 0.960 | 3.2 | reference implementation |
+| **kNN `ball_tree` after SVD-64** | **96.7%** | **0.963** | 1.3 | the only way trees actually work: dense projection first |
+| kNN `kd_tree` after SVD-64 | 96.7% | 0.963 | 1.3 | equivalent |
+| pure-python kNN (k=5) | 96.1% | 0.956 | **66** | same answer, 50x the cost |
+| gated fusion of the above | 95.5% | 0.948 | 0.9 | the gate tuned to "never consult the others": fusion does not help |
+
+Two engineering conclusions worth more than the last 1.2 points of accuracy:
+
+* **Trees do not index sparse n-gram vectors.** scikit-learn says so explicitly
+  (`cannot use tree with sparse input: using brute force`), so `ball_tree`/`kd_tree` on
+  raw hashed features are slower than brute force and identical in accuracy. Reducing to
+  64 dense dimensions (truncated SVD, fitted on train) makes the trees real and *faster
+  than brute force* (1.3 vs 3.2 ms/doc) with the same best accuracy.
+* **Fusion was not worth it.** Tuning the gate on the validation split chose "always trust
+  the centroid" — with one method at 96% and the others at 68%, there is nothing to gain.
+
+### Time budget (why this is cheap)
+
+| step | 2k docs | 19k docs (sample+live) | whole corpus (184k) |
+|---|---|---|---|
+| text extraction, 8 workers | 1.7 s | **16.4 s** | ~2.6 min |
+| naive Bayes | 0.8 s | 7.4 s | ~1.2 min |
+| centroid | 1.7 s | 16 s | ~2.6 min |
+| kNN ball_tree + SVD-64 | 2.6 s | 25 s | ~4 min |
+| pure-python kNN | 2.2 min | 21 min | ~3.4 h |
+
+Extraction dominates; the classifier is noise. That is the argument for shipping the
+cheap one (naive Bayes) and only paying 2.5x for kNN if a +0.9 pp matters.
+
+### Quality flags
+
+`lang.quality()` is deliberately dumb and threshold-based, because every downstream rule
+silently does the wrong thing on a 60-character page:
+
+| flag | rule | meaning |
+|---|---|---|
+| `no_text` | chars < 40 | text layer missing (scan / image-only): needs OCR, do not parse |
+| `sparse` | chars < 200 | cover sheet / notice: parse, but do not expect fields |
+| `low_letters` | letters < 35% of chars | extraction garbage, or a pure numeric table |
+| `mostly_digits` | digits > 50% | table dump, no labels to pair |
+
+Census over the whole `sample` + `live` corpus (**18,986 documents**):
+
+```
+chars   min 271   p10 455   median 567   p90 690   max 921
+flags   {}                       zero flagged documents
+```
+
+So on this data the guard never fires — which is the point: it is a *guard* for the FINAL
+release and for any scanned document, not a filter for the current corpus. If it fires on
+more than ~0.1% of a phase, the extraction pipeline is broken, not the document.
+
+The language census also validates the "entity ≠ language" claim:
+
+| entity | language mix | comment |
+|---|---|---|
+| US01 | en 6,291, it 45, de 34 | |
+| ES01 | es 3,493, fr 25, it 24 | |
+| FR01 | fr 1,791, pt 21, de 8 | |
+| CN01 | **en 550**, fr 10, it 8 | entity country is CN, documents are English |
+| MA01 | **fr 221**, pt 3 | Morocco invoices in French |
+| CH01 | de 209, en 3, pt 2 | |
+| ZA01 | en 2 | the 2025-12 acquisition, no rules yet |
+
+Low-confidence predictions are rare (0-15 per entity) and concentrated exactly there, so
+the confidence is usable as a "look at this one" signal even though the fusion itself was
+not worth using.
 
 ## Findings
 

@@ -70,6 +70,33 @@ def test_real_pdf_recovers_the_fields():
     assert any(label.startswith("total") for label in labels)
 
 
+def test_language_methods_on_tiny_corpus():
+    from pdf_layout.lang import CentroidDetector, NaiveBayesDetector, SklearnKnnDetector
+    es = ["la factura total con fecha de vencimiento y el cliente numero de cuenta banco"] * 5
+    fr = ["la facture total avec date echeance et le client numero de compte banque"] * 5
+    de = ["die rechnung gesamt mit datum fallig und der kunde nummer konto bank"] * 5
+    texts, labels = es + fr + de, ["es"] * 5 + ["fr"] * 5 + ["de"] * 5
+    samples = {
+        "factura total fecha vencimiento cliente banco": "es",
+        "facture total date echeance client banque": "fr",
+        "rechnung gesamt datum fallig kunde bank": "de",
+    }
+    for detector in (CentroidDetector(), NaiveBayesDetector(), SklearnKnnDetector(algorithm="brute")):
+        detector.fit(texts, labels)
+        for text, expected in samples.items():
+            assert detector.predict(text)[0] == expected, (detector.name, text)
+
+
+def test_quality_flags():
+    from pdf_layout.lang import quality
+    assert quality("").flags == ["no_text"]
+    assert "sparse" in quality("factura numero fecha cliente banco " * 4).flags  # ~140 chars
+    numeric = quality("12,50 48,00 1.234,56 " * 30)   # a table dump: numbers, no labels
+    assert {"low_letters", "mostly_digits"} & set(numeric.flags)
+    body = ("Faktura Nummer 123 Datum 01/02/2023 Kunde Beispiel GmbH Betrag 1.234,56 EUR " * 6)
+    assert quality(body).ok, quality(body).flags
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:

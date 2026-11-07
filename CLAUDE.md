@@ -110,6 +110,45 @@ polars data layer, and would make the "start small" claim false. The point of ke
 is provenance — when a branch here looks arbitrary, the reason it matters is visible
 there. Treat it as documentation you can read, not code you inherit.
 
+## 9b. Why there are two engines and the baseline is still wired up
+
+`bankrec.alt` is a second matcher, selected by `process --engine alt` (the default);
+`--engine baseline` still runs `matching.py` + `rules.py` and still scores 39.56 on the
+sample, byte for byte. Keeping both is not indecision, it is the only way the number
+means anything: every claim in this file was measured as *alt minus baseline on the same
+phase*, and deleting the control would leave a score with nothing to compare against
+(§14 — coverage and consistency are all we have on unlabelled data).
+
+The engines differ in which question comes first, and that is the whole idea:
+
+* the baseline asks **which items could this line settle**, then checks whether a subset
+  adds up (§5);
+* `alt` asks **what kind of operation is this line** — a direct-debit batch credit, a
+  card settlement, a confirming remittance at maturity, a returned collection, a plain
+  transfer — and only then looks for items. For the aggregate segments there is nothing
+  to rank: `direct_debit_batches/`, `card_settlements/`, `cheque_deposits/`,
+  `payment_runs/` and the remittance advices *contain the answer*, and the only real
+  question is which file row belongs to which bank line.
+
+Three things inside it are worth knowing before changing it:
+
+* **An operation only answers for a line whose amount it can account for**
+  (`ops.select`). A batch id appears in the collection line's text *and* in its fee line
+  ("COMISION REMESA 03250603661 125 RECIBOS", -18.75 against an 89,776.76 batch).
+  Expanding the batch for the fee line added 125 phantom rows and marked every receipt a
+  duplicate. Direction is checked the same way: a payment run never explains a receipt.
+* **The inference resolvers are arbitrated by arithmetic, not by order.** A truncated
+  reference that resolves to one 1,265.84 invoice must not beat the 42-invoice sweep that
+  sums to the 100,423.72 on the statement, so `resolve()` prefers the proposal whose
+  amounts net to the cash and falls back to evidence order only for ties.
+* **Document numbers are matched by prefix *and* suffix.** The bank drops our prefix far
+  more often than it truncates the number ("FRAS 0414882" for FV25-0414882), and the
+  dropped part is not a fixed string. `ledger` answers suffix queries with one bisect
+  over a reversed copy of the key list, which is a list of strings rather than the
+  3-million-entry tail index the obvious version needs (§11).
+
+`advanced/` stays what §9 says it is: documentation. `alt` is code.
+
 ## 10. Why polars for IO and Python for matching
 
 Amdahl, not taste. Reading/filtering/joining 1.5 M rows is bulk work where a

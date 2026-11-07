@@ -246,3 +246,4 @@ devenv.local.yaml
 !/data/processed/.gitkeep
 /data/raw/
 /builds/
+/stages/

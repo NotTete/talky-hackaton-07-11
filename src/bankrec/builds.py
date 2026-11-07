@@ -61,6 +61,14 @@ class Build:
     seconds: float = 0.0
     created_at: str = ""
     name: str = ""
+    #: free-text hypothesis for this experiment (--note)
+    note: str = ""
+    #: free-form labels for grouping runs (--tag)
+    tags: list[str] = field(default_factory=list)
+    #: git commit, code hash and data snapshot (see experiments.py)
+    provenance: dict = field(default_factory=dict)
+    #: preprocessing summary: files/groups/entries per document family + advice formats
+    documents: dict = field(default_factory=dict)
     item_phases: list[str] = field(default_factory=list)
     #: filled by `evaluate` (only phases with a golden have a score)
     metrics: dict = field(default_factory=dict)

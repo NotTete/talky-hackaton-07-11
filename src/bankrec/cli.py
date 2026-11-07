@@ -26,6 +26,7 @@ from . import __version__
 from .builds import Build, Builds
 from .config import ROOT, load_settings
 from .evaluate import evaluate_build, format_segments, metrics_for, validate_file
+from .experiments import compare_builds, markdown_report, render_comparison, runs_table
 from .pipeline import process
 from .schema import CATEGORIES, EXCEPTIONS, SUBMISSION_COLUMNS, validate_row  # noqa: F401 (re-export)
 
@@ -86,11 +87,23 @@ def cmd_process(args) -> int:
         from .hooks import TraceRecorder
 
         hooks.append(TraceRecorder(_settings(args).builds_dir))
-    build = process(_settings(args), args.phase, limit=args.limit, name=args.name, hooks=hooks)
+    build = process(
+        _settings(args),
+        args.phase,
+        limit=args.limit,
+        name=args.name,
+        engine=args.engine,
+        hooks=hooks,
+        note=args.note,
+        tags=args.tag,
+    )
     print(f"build   {build.id}")
     print(f"file    {build.path}")
     print(f"sha256  {build.sha256}")
     print(f"rows    {build.rows:,} ({build.item_rows:,} item + {build.no_item_rows:,} category)")
+    if build.provenance:
+        git = build.provenance.get("git") or {}
+        print(f"code    {build.provenance.get('code_sha', '—')}@git:{git.get('commit') or '—'}{' (dirty)' if git.get('dirty') else ''}")
     if build.trace:
         print(f"trace   {build.trace}")
     print("\nnext:   bankrec evaluate " + build.id + (" --explain" if build.trace else ""))
@@ -234,6 +247,131 @@ def cmd_builds(args) -> int:
     return 0
 
 
+def cmd_runs(args) -> int:
+    """The experiment list: score, delta vs a baseline, code version, hypothesis."""
+    settings = _settings(args)
+    builds = Builds(settings.builds_dir)
+    print(runs_table(builds, args.phase, args.baseline))
+    return 0
+
+
+def _baseline(builds: Builds, phase: str | None):
+    done = [b for b in builds.list(phase) if b.score is not None]
+    return done[-1] if done else None
+
+
+def cmd_compare(args) -> int:
+    """Diff two builds: which lines were fixed/broken, and which segments moved."""
+    settings = _settings(args)
+    builds = Builds(settings.builds_dir)
+    phase = args.phase
+
+    if args.a and args.b:
+        before = _resolve(builds, args.a, phase)
+        after = _resolve(builds, args.b, phase)
+    elif args.a:
+        after = _resolve(builds, args.a, phase)
+        before = _baseline(builds, after.phase)
+    else:
+        after = builds.latest(phase)
+        before = _baseline(builds, after.phase if after else phase)
+
+    if before is None or after is None:
+        raise SystemExit("need two builds: `bankrec compare [BEFORE] AFTER` (or evaluate a baseline first)")
+    if before.id == after.id:
+        raise SystemExit(f"both picks are the same build ({before.id})")
+    try:
+        comparison = compare_builds(before, after, settings, examples=max(args.examples, 0))
+    except FileNotFoundError as exc:
+        raise SystemExit(f"cannot compare without labels: {exc}") from None
+    print(render_comparison(comparison, examples=max(args.examples, 0)))
+    return 0
+
+
+def cmd_report(args) -> int:
+    """A portable markdown report: provenance + score + why."""
+    settings = _settings(args)
+    builds = Builds(settings.builds_dir)
+    build = _resolve(builds, args.build, args.phase)
+    try:
+        text = markdown_report(build, settings, examples=max(args.examples, 0))
+    except FileNotFoundError as exc:
+        raise SystemExit(f"cannot explain without labels: {exc}") from None
+    if args.md:
+        stem = Path(build.path).name.split(".")[0]
+        out = Path(build.path).with_name(f"{stem}.md")
+        out.write_text(text, encoding="utf-8")
+        print(f"wrote {out}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_documents(args) -> int:
+    """Preprocessing report: what each document family gave us, and what is still raw."""
+    settings = _settings(args)
+    from .data import Phase
+    from .documents import build_document_report, render
+    from .preprocess import DocumentContext, load_advices
+
+    phase = Phase(settings, args.phase)
+    context = DocumentContext(phase)
+    advices = load_advices(phase)
+    txns = None if args.no_attach else phase.bank_transactions()
+    report = build_document_report(phase, context, advices, txns=txns)
+    print(render(report, attached=not args.no_attach))
+    return 0
+
+
+def cmd_stages(args) -> int:
+    """List preprocessing stage runs (PDF layout, advice parsing, ...)."""
+    settings = _settings(args)
+    from .stages import Stages, compare_runs, render_table, stages_root
+
+    runs = Stages(stages_root(settings)).list(args.stage, args.phase)
+    print(render_table(runs))
+    if args.compare:
+        if len(runs) < 2:
+            print("\nneed two runs of the same stage to compare")
+        else:
+            print(compare_runs(runs[1], runs[0]))
+    return 0
+
+
+def cmd_stage(args) -> int:
+    """Record a preprocessing run: metrics + report files + provenance."""
+    settings = _settings(args)
+    from .stages import format_metrics, record
+
+    metrics: dict = {}
+    for spec in args.metric or []:
+        if "=" not in spec:
+            raise SystemExit(f"--metric expects key=value, got {spec!r}")
+        key, value = spec.split("=", 1)
+        try:
+            parsed: object = float(value)
+        except ValueError:
+            parsed = value
+        metrics[key.strip()] = parsed
+    run = record(
+        args.stage_name,
+        args.phase or settings.phase,
+        settings=settings,
+        note=args.note,
+        tags=args.tag,
+        metrics=metrics,
+        reports=[Path(path) for path in (args.report or [])],
+        warnings=args.warning,
+    )
+    print(f"stage   {run.id}")
+    print(f"metrics {format_metrics(run.metrics)}")
+    print(f"reports {', '.join(r['name'] for r in run.reports) or '—'}")
+    if run.warnings:
+        print(f"warnings {len(run.warnings)}: {'; '.join(run.warnings[:3])}")
+    print("\nlist:   bankrec stages")
+    return 0
+
+
 # ----------------------------------------------------------------- validate
 
 
@@ -294,7 +432,15 @@ def build_parser() -> argparse.ArgumentParser:
     _common(p)
     p.add_argument("--name", default="", help="optional label appended to the build id")
     p.add_argument("--limit", type=int, default=0, help="only the first N bank lines (dev)")
+    p.add_argument(
+        "--engine",
+        choices=["alt", "baseline"],
+        default="alt",
+        help="alt: operation-first (bankrec.alt); baseline: the conservative matcher",
+    )
     p.add_argument("--trace", action="store_true", help="record which rule fired per line (evaluate --explain reads it)")
+    p.add_argument("--note", default="", help="hypothesis for this experiment (shown by `runs`)")
+    p.add_argument("--tag", action="append", default=[], help="label for grouping runs (repeatable)")
     p.set_defaults(func=cmd_process)
 
     p = sub.add_parser("evaluate", aliases=["score"], help="score / coverage-check a build")
@@ -324,6 +470,46 @@ def build_parser() -> argparse.ArgumentParser:
     _common(p)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_builds)
+
+    p = sub.add_parser("runs", aliases=["experiments"], help="experiment list: score, Δbaseline, code, note")
+    _common(p)
+    p.add_argument("--baseline", help="build id to measure against (default: oldest evaluated)")
+    p.set_defaults(func=cmd_runs)
+
+    p = sub.add_parser("compare", aliases=["diff"], help="diff two builds: fixed/broken lines and segment deltas")
+    p.add_argument("a", nargs="?", help="before (or the only build: compared to the baseline)")
+    p.add_argument("b", nargs="?", help="after (default: the baseline→latest pair)")
+    p.add_argument("--examples", type=int, default=5, help="regressions to show")
+    _common(p)
+    p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("report", help="markdown report: provenance + score + plain-English diagnosis")
+    p.add_argument("build", nargs="?", help="build id (default: latest)")
+    p.add_argument("--md", action="store_true", help="write <build>.md next to the artifact")
+    p.add_argument("--examples", type=int, default=3)
+    _common(p)
+    p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("documents", aliases=["preprocess", "docs"], help="preprocessing report: parsed documents, integrity, attachment")
+    _common(p)
+    p.add_argument("--no-attach", action="store_true", help="skip the bank-line scan (structure only)")
+    p.set_defaults(func=cmd_documents)
+
+    p = sub.add_parser("stages", aliases=["stage-runs"], help="list preprocessing stage runs")
+    _common(p)
+    p.add_argument("--stage", help="filter by stage name")
+    p.add_argument("--compare", action="store_true", help="compare the two latest runs (metrics + reports)")
+    p.set_defaults(func=cmd_stages)
+
+    p = sub.add_parser("stage", aliases=["record-stage"], help="record a preprocessing run (metrics + report files)")
+    _common(p)
+    p.add_argument("--stage", dest="stage_name", required=True, help="stage name, e.g. pdf_layout")
+    p.add_argument("--note", default="", help="what the run tested")
+    p.add_argument("--tag", action="append", default=[], help="label (repeatable)")
+    p.add_argument("--metric", action="append", default=[], help="key=value (repeatable)")
+    p.add_argument("--report", action="append", default=[], help="report file the stage wrote (repeatable)")
+    p.add_argument("--warning", action="append", default=[], help="what the stage could not do (repeatable)")
+    p.set_defaults(func=cmd_stage)
 
     p = sub.add_parser("validate", help="structural pre-flight of a build")
     p.add_argument("build", nargs="?", help="build id (default: latest)")

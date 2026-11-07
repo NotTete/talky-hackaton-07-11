@@ -3,7 +3,7 @@ PY ?= $(shell if [ -x .devenv/state/venv/bin/python ]; then echo .devenv/state/v
               elif command -v python3 >/dev/null; then echo python3; else echo python; fi)
 export PYTHONPATH := src
 
-.PHONY: help data data-lite data-all list verify doctor process evaluate explain push builds validate test lint map map-check map-serve whoami result
+.PHONY: help data data-lite data-all list verify doctor process evaluate explain push builds validate test lint map map-check map-serve whoami result runs compare report documents stages
 
 help:
 	@echo "make data        docs + masters + 1-month sample (~10 MB download)"
@@ -20,6 +20,11 @@ help:
 	@echo "make builds                                 list the build repository"
 	@echo ""
 	@echo "make validate [BUILD=<id>]   structural pre-flight only"
+	@echo "make runs [BASELINE=<id>]    experiment list: score, Δbaseline, code, note"
+	@echo "make compare [BEFORE=<id>] [AFTER=<id>]  fixed/broken lines between two builds"
+	@echo "make report [BUILD=<id>] [MD=1]          markdown report (provenance + why)"
+	@echo "make documents [PHASE=sample]             preprocessing report: parsed docs, integrity, attachment"
+	@echo "make stages [STAGE=pdf_layout] [PHASE=sample]  preprocessing stage runs (reports + metrics)"
 	@echo "make doctor                  data + builds overview"
 	@echo "make test                    pytest"
 	@echo ""
@@ -48,13 +53,28 @@ doctor:
 	$(PY) -m bankrec doctor
 
 process:
-	$(PY) -m bankrec process --phase $(PHASE) $(if $(NAME),--name $(NAME),) $(if $(TRACE),--trace,)
+	$(PY) -m bankrec process --phase $(PHASE) $(if $(NAME),--name $(NAME),) $(if $(TRACE),--trace,) $(if $(NOTE),--note "$(NOTE)",) $(if $(TAG),--tag $(TAG),)
 
 evaluate:
 	$(PY) -m bankrec evaluate $(BUILD) $(if $(PHASE),--phase $(PHASE),)
 
 explain:
 	$(PY) -m bankrec evaluate $(BUILD) $(if $(PHASE),--phase $(PHASE),) --explain --examples $(or $(EXAMPLES),3)
+
+runs:
+	$(PY) -m bankrec runs $(if $(PHASE),--phase $(PHASE),) $(if $(BASELINE),--baseline $(BASELINE),)
+
+compare:
+	$(PY) -m bankrec compare $(BEFORE) $(AFTER) $(if $(PHASE),--phase $(PHASE),) $(if $(EXAMPLES),--examples $(EXAMPLES),)
+
+report:
+	$(PY) -m bankrec report $(BUILD) $(if $(PHASE),--phase $(PHASE),) $(if $(MD),--md,)
+
+documents:
+	$(PY) -m bankrec documents $(if $(PHASE),--phase $(PHASE),) $(if $(NO_ATTACH),--no-attach,)
+
+stages:
+	$(PY) -m bankrec stages $(if $(STAGE),--stage $(STAGE),) $(if $(PHASE),--phase $(PHASE),)
 
 push:
 	$(PY) -m bankrec push $(PHASE) $(BUILD)

@@ -215,6 +215,96 @@ def _describe_items(items: dict[str, int], limit: int = 2) -> str:
 # ------------------------------------------------------------------- diagnose
 
 
+@dataclass(slots=True)
+class LineResult:
+    """Independent classification of one bank line against the golden (scorer semantics)."""
+
+    ok: bool
+    structural_ok: bool
+    kinds: tuple[str, ...]
+    missing: list[str]
+    extra: list[str]
+    off: list[str]
+    exc_wrong: list[str]
+
+
+def parse_rows(rows: list) -> tuple[dict[str, tuple[int, str]], str, str]:
+    """Submission rows of one bank line -> (item -> (cents, exception), category, exception)."""
+    sitems = {item: (amount, exc) for item, amount, _cat, exc in rows if item}
+    scat = next((cat for item, _a, cat, _e in rows if not item), "")
+    sexc = next((exc for item, _a, _c, exc in rows if not item), "")
+    return sitems, scat, sexc
+
+
+def classify_line(
+    gitems: dict[str, int],
+    gexc_by_item: dict[str, str],
+    gcat: str,
+    gexc: str,
+    sitems: dict[str, tuple[int, str]],
+    scat: str,
+    sexc: str,
+    has_rows: bool,
+) -> LineResult:
+    """Mirror `vendor/bankrec_score.py` exactly: what is wrong with this line, and is it right?
+
+    Shared by `diagnose` (one build) and `compare_builds` (two builds), so "fixed" in a
+    comparison means the same thing as "correct" in the score. One definition, no drift
+    (CLAUDE.md §13).
+    """
+    kinds: list[str] = []
+    missing: list[str] = []
+    extra: list[str] = []
+    off: list[str] = []
+    exc_wrong: list[str] = []
+
+    if gitems:
+        if not has_rows:
+            kinds.append("LINE_MISSING")
+            missing = sorted(gitems)
+        elif scat:
+            kinds.append("EXPECTED_ITEM_GOT_CATEGORY")
+            missing = sorted(gitems)
+        else:
+            missing = sorted(i for i in gitems if i not in sitems)
+            extra = sorted(i for i in sitems if i not in gitems)
+            for item, g in gitems.items():
+                if item not in sitems:
+                    continue
+                if abs(sitems[item][0] - g) > amount_tolerance_cents(g):
+                    off.append(item)
+            if missing:
+                kinds.append("MISSING_ITEM")
+            if extra:
+                kinds.append("EXTRA_ITEM")
+            if off:
+                kinds.append("AMOUNT_OFF")
+            for item in gitems:
+                if item in sitems and item not in off:
+                    if sitems[item][1].upper() != (gexc_by_item[item] or "").upper():
+                        exc_wrong.append(item)
+    else:
+        if not has_rows:
+            kinds.append("LINE_MISSING")
+        elif sitems:
+            kinds.append("EXPECTED_CATEGORY_GOT_ITEM")
+            extra = sorted(sitems)  # every submitted item is a false positive pair
+        elif scat.upper() != (gcat or "").upper():
+            kinds.append("WRONG_CATEGORY")
+        elif sexc.upper() != (gexc or "").upper():
+            kinds.append("WRONG_EXCEPTION")
+
+    if gitems:
+        structural_ok = has_rows and not scat and not missing and not extra and not off
+        ok = structural_ok and not exc_wrong
+    else:
+        structural_ok = has_rows and not sitems and scat.upper() == (gcat or "").upper()
+        ok = structural_ok and sexc.upper() == (gexc or "").upper()
+    if exc_wrong:
+        kinds.append("WRONG_EXCEPTION")
+    return LineResult(ok, structural_ok, tuple(kinds), missing, extra, off, exc_wrong)
+
+
 def diagnose(
     build: Build,
     settings: Settings | None = None,
@@ -248,11 +338,12 @@ def diagnose(
                 continue
             submitted[txn].append((item, amount, category, exception))
 
+    effective_metrics = metrics if metrics is not None else (build.metrics or {})
     report = InsightReport(
         build_id=build.id,
         phase=build.phase,
-        score=(metrics or {}).get("score"),
-        metrics=dict(metrics or build.metrics or {}),
+        score=effective_metrics.get("score"),
+        metrics=dict(effective_metrics),
         trace=bool(trace),
         examples=defaultdict(list),
     )
@@ -262,67 +353,19 @@ def diagnose(
         gitems = {item: _cents(amount) for item, (amount, _exc) in gitems_raw.items()}
         gexc_by_item = {item: exc for item, (_amount, exc) in gitems_raw.items()}
         rows = submitted.get(txn, [])
-        sitems = {item: (amount, exc) for item, amount, _cat, exc in rows if item}
-        scat = next((cat for item, _a, cat, _e in rows if not item), "")
-        sexc = next((exc for item, _a, _c, exc in rows if not item), "")
+        sitems, scat, sexc = parse_rows(rows)
 
         report.lines += 1
         report.pairs_golden += len(gitems)
         report.pairs_submitted += len(sitems)
 
-        kinds: list[str] = []
-        missing: list[str] = []
-        extra: list[str] = []
-        off: list[str] = []
-        exc_wrong: list[str] = []
-
-        if gitems:
-            if not rows:
-                kinds.append("LINE_MISSING")
-                missing = sorted(gitems)
-            elif scat:
-                kinds.append("EXPECTED_ITEM_GOT_CATEGORY")
-                missing = sorted(gitems)
-            else:
-                missing = sorted(i for i in gitems if i not in sitems)
-                extra = sorted(i for i in sitems if i not in gitems)
-                for item, g in gitems.items():
-                    if item not in sitems:
-                        continue
-                    sent = sitems[item][0]
-                    if abs(sent - g) > amount_tolerance_cents(g):
-                        off.append(item)
-                if missing:
-                    kinds.append("MISSING_ITEM")
-                if extra:
-                    kinds.append("EXTRA_ITEM")
-                if off:
-                    kinds.append("AMOUNT_OFF")
-                for item in gitems:
-                    if item in sitems and item not in off:
-                        if sitems[item][1].upper() != (gexc_by_item[item] or "").upper():
-                            exc_wrong.append(item)
-                if exc_wrong:
-                    kinds.append("WRONG_EXCEPTION")
-        else:
-            if not rows:
-                kinds.append("LINE_MISSING")
-            elif sitems:
-                kinds.append("EXPECTED_CATEGORY_GOT_ITEM")
-            elif scat.upper() != (gcat or "").upper():
-                kinds.append("WRONG_CATEGORY")
-
-        # line success mirrors the scorer exactly: same item set, every amount within
-        # tolerance AND every exception equal (vendor/bankrec_score.py `st[1]`).
-        if gitems:
-            structural_ok = bool(rows) and not scat and not missing and not extra and not off
-            ok = structural_ok and not exc_wrong
-        else:
-            structural_ok = bool(rows) and not sitems and scat.upper() == (gcat or "").upper()
-            ok = structural_ok and sexc.upper() == (gexc or "").upper()
+        result = classify_line(gitems, gexc_by_item, gcat, gexc, sitems, scat, sexc, bool(rows))
+        ok = result.ok
+        kinds = list(result.kinds)
+        missing, extra, off, exc_wrong = result.missing, result.extra, result.off, result.exc_wrong
         # "exception only" is a very different failure: the allocation is right, so it
         # counts for F1 and loses only transaction accuracy / macro-F1.
-        exc_only = (not ok) and structural_ok
+        exc_only = (not ok) and result.structural_ok
 
         report.missing_pairs += len(missing)
         report.extra_pairs += len(extra)
@@ -572,10 +615,13 @@ def explain_build(
 __all__ = [
     "InsightReport",
     "LineInsight",
+    "LineResult",
     "SegmentInsight",
     "ExceptionInsight",
     "KIND_INFO",
+    "classify_line",
     "diagnose",
     "explain_build",
+    "parse_rows",
     "render",
 ]

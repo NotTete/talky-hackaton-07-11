@@ -57,20 +57,31 @@ class DocumentContext:
         # n43/mt940 lines only ever have it embedded (sometimes truncated) in free text —
         # same lookup path as a document reference (text.reference_tokens/alnum).
         self.groups_by_e2e_token: dict[str, DocumentGroup] = {}
+        #: every group exactly once, for the preprocessing report (a transfer group is
+        #: only indexed by e2e, so `groups_by_amount` is not enough to enumerate them)
+        self.groups: list[DocumentGroup] = []
+        self._tracked: set[int] = set()
         self._build_direct_debits(phase)
         self._build_cards(phase)
         self._build_cheques(phase)
         self._build_payment_runs(phase)
         self._sorted_totals: list[int] = sorted(self.groups_by_amount)
 
+    def _track(self, group: DocumentGroup) -> None:
+        if id(group) not in self._tracked:
+            self._tracked.add(id(group))
+            self.groups.append(group)
+
     def _add(self, group: DocumentGroup) -> None:
         self.groups_by_amount[group.total_cents].append(group)
+        self._track(group)
 
     def _add_e2e(self, e2e: str, group: DocumentGroup) -> None:
         self.groups_by_e2e[e2e] = group
         token = alnum(e2e)
         if token:
             self.groups_by_e2e_token[token] = group
+        self._track(group)
 
     def _build_direct_debits(self, phase: Phase) -> None:
         df = phase.documents("direct_debit_batches")
@@ -250,6 +261,10 @@ class Advice:
     received_ymd: int
     total_cents: int = 0
     entries: list[AdviceEntry] = field(default_factory=list)
+    #: file format from the index (csv/txt/xlsx/pdf), used by the preprocessing report
+    fmt: str = ""
+    #: why there are no entries: "no extractor" / "unparsed file" / "" when parsed
+    error: str = ""
 
     @property
     def computed_total_cents(self) -> int:
@@ -392,15 +407,20 @@ def load_advices(phase: Phase) -> list[Advice]:
         if not rel:
             continue
         if fmt in UNPARSED_ADVICE_FORMATS:
-            out.append(Advice(path=rel, entity=row.get("entity") or "", payer_name=row.get("payer_name") or "", received_ymd=_ymd(row.get("received_date") or "")))
+            out.append(Advice(path=rel, entity=row.get("entity") or "", payer_name=row.get("payer_name") or "", received_ymd=_ymd(row.get("received_date") or ""), fmt=fmt, error="no extractor"))
             continue
         parser = _ADVICE_PARSERS.get(fmt)
         if not parser:
+            out.append(Advice(path=rel, entity=row.get("entity") or "", payer_name=row.get("payer_name") or "", received_ymd=_ymd(row.get("received_date") or ""), fmt=fmt, error=f"unknown format {fmt}"))
             continue
         advice = parser(root / rel)
         if advice is None:
+            # keep the index entry: a dropped file is invisible in the report and cannot be
+            # handed to whoever writes the extractor (see documents.py).
+            out.append(Advice(path=rel, entity=row.get("entity") or "", payer_name=row.get("payer_name") or "", received_ymd=_ymd(row.get("received_date") or ""), fmt=fmt, error="unparsed file"))
             continue
         advice.path = rel
+        advice.fmt = fmt
         advice.entity = row.get("entity") or advice.entity
         advice.payer_name = row.get("payer_name") or advice.payer_name
         advice.received_ymd = advice.received_ymd or _ymd(row.get("received_date") or "")

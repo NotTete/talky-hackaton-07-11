@@ -63,3 +63,65 @@ def test_insights_match_the_scorer_and_are_deterministic(sample_settings):
     assert abs(first.lines_ok / first.lines - scored.metrics["txn_accuracy"]) < 0.002
     assert first.trace and first.reason_all
     assert render(first) == render(second)
+
+
+def test_experiment_provenance_and_self_comparison(sample_settings):
+    """A run records what produced it, and comparing a build to itself is a no-op."""
+    from bankrec.builds import Builds
+    from bankrec.experiments import compare_builds, runs_table
+
+    build = process(
+        sample_settings,
+        "sample",
+        name="prov",
+        note="provenance check",
+        tags=["t"],
+        limit=300,
+    )
+    assert build.note == "provenance check" and build.tags == ["t"]
+    assert build.provenance.get("code_sha")
+    assert "git" in build.provenance and "data" in build.provenance
+
+    comparison = compare_builds(build, build, sample_settings, examples=0)
+    assert comparison.net == 0 and not comparison.fixed and not comparison.broken
+
+    table = runs_table(Builds(sample_settings.builds_dir), "sample")
+    assert build.id in table and "provenance check" in table
+
+
+def test_document_report_is_structural_and_attaches(sample_settings):
+    """Preprocessing has its own report: parsed families, formats, and join health."""
+    from bankrec.data import Phase
+    from bankrec.documents import build_document_report
+    from bankrec.preprocess import DocumentContext, load_advices
+
+    phase = Phase(sample_settings, "sample")
+    txns = phase.bank_transactions()
+    report = build_document_report(phase, DocumentContext(phase), load_advices(phase), txns)
+
+    assert report.families["dd_batch"].groups > 0
+    assert report.families["dd_batch"].with_reference > 0
+    assert report.formats["csv"].parsed > 0 and report.formats["csv"].entries > 0
+    assert report.bank_lines == len(txns) and report.group_lines > 0
+    assert any("pdf" in warning for warning in report.warnings)
+
+
+def test_stage_registry_is_content_addressed(tmp_path):
+    """A preprocessing run is versioned by stage + metrics + report hashes + code."""
+    from bankrec.config import load_settings
+    from bankrec.stages import Stages, record, render_table, stages_root
+
+    settings = load_settings()
+    settings.builds_dir = tmp_path / "builds"
+    bench = tmp_path / "bench.json"
+    bench.write_text('{"accuracy": 0.9}', encoding="utf-8")
+
+    first = record("pdf_layout", "sample", settings=settings, note="bench", metrics={"accuracy": 0.9}, reports=[bench])
+    second = record("pdf_layout", "sample", settings=settings, note="bench", metrics={"accuracy": 0.9}, reports=[bench])
+    assert first.id == second.id
+    assert first.reports and len(first.reports[0]["sha256"]) == 64
+    assert first.provenance.get("code_sha")
+
+    runs = Stages(stages_root(settings)).list("pdf_layout", "sample")
+    assert [run.id for run in runs] == [first.id]
+    assert "pdf_layout" in render_table(runs)

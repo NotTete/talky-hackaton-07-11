@@ -131,6 +131,64 @@ candidates it had to choose from. That is how "exact_ref looks precise" becomes
 work next. Trace recording is a hook (`hooks.py`); it observes decisions and cannot
 change the submission, because matching is a chronological book (see CLAUDE.md §7).
 
+### Experiments and versions (no tracking server)
+
+MLflow answers "which run produced this number?" when runs are cheap and distributed.
+Here the artifact is already content-addressed (`builds/<stamp>-<sha8>-<name>`), the score
+comes from a vendored scorer over a fixed golden, and the registry is one JSON file, so a
+tracking server would add a database and a UI without adding a fact.
+
+What was missing is **provenance** and a **diff**. Every build now records the git commit
+and dirty flag, a hash of `src/` + config (so uncommitted experiments are still
+reproducible), and a cheap data-snapshot fingerprint. That gives three independent
+versions of one run:
+
+| version | what it is | where |
+|---|---|---|
+| code | git commit + `code_sha` of the exact files | build sidecar |
+| artifact | sha256 of the decompressed CSV | build id + sidecar |
+| data | `manifest.json` hash + phase file sizes | build sidecar |
+
+Three commands make it useful:
+
+```bash
+make runs                       # experiment list: score, Δ vs baseline, code, note
+make compare BEFORE=<id> AFTER=<id>   # fixed/broken lines, per-segment and per-kind deltas
+make report BUILD=<id> MD=1     # markdown: provenance + score + `--explain`
+make documents                  # preprocessing: parsed documents, integrity, attachment
+```
+
+Preprocessing has its own report for the same reason matching does: a silent drop is
+invisible in the score. `make documents` shows, per phase, files → groups → entries per
+document family, whether entries carry a usable reference and amount, whether they sum
+to the batch/deposit total the bank moved, parse coverage per advice format (CSV/TXT
+parsed vs XLSX/PDF with no extractor), and how many bank lines the index can explain.
+The compact summary is stored on every build (`build.documents`), so `report` includes it
+and `compare` shows when a parser change moved entries or integrity warnings.
+
+Preprocessing stages that produce a *report* but no submission (PDF layout/language,
+advice extraction, payment-run normalisation) register in `stages/` with the same
+provenance (git commit, code sha, data fingerprint) and the sha256 of every file they
+wrote:
+
+```bash
+python -m bankrec stage --stage pdf_layout --phase sample \
+  --note "fusion + quality gate" --metric accuracy=0.93 --metric docs=1200 \
+  --report experiments/pdf_layout/out/lang_bench.json
+make stages [STAGE=pdf_layout] [PHASE=sample]
+```
+
+A stage run's id is content-addressed (`stage-phase-<sha8>` over metrics + report
+hashes + code sha), so re-running the same experiment is idempotent and a code change
+that leaves the metrics identical still gets a new id.
+
+`process --note "hypothesis" --tag v2` writes the hypothesis next to the run, so
+`make runs` is the lab notebook. `compare` uses the strict scorer definition of a
+correct line (exact item set, amounts within tolerance, same exceptions); a tie-break
+that swaps one wrong item for another is not counted as progress. Regressions are
+printed with the bank text, so a +583 net that broke 13 lines is visible, not hidden by
+the average.
+
 ---
 
 ## 4. Layout
@@ -167,11 +225,23 @@ change the submission, because matching is a chronological book (see CLAUDE.md �
     ├── schema.py              ← ⭐ the contract: columns, closed lists, tolerance
     ├── data.py                ← ⭐ polars loaders: dumps → canonical tables
     ├── text.py                ← ⭐ reference/name normalisation helpers
-    ├── matching.py            ← ⭐⭐ IMPLEMENT HERE: what does a line settle?
-    ├── rules.py               ← ⭐⭐ IMPLEMENT HERE: exception / category codes
+    ├── matching.py            ← ⭐⭐ baseline matcher: what does a line settle?
+    ├── rules.py               ← ⭐⭐ baseline exception / category codes
+    ├── preprocess.py          ← baseline batch/advice lookups
+    ├── alt/                   ← ⭐⭐ the operation-first engine (`process --engine alt`)
+    │   ├── engine.py          ←   classify the line, then read its answer key
+    │   ├── ops.py             ←   batches, card settlements, cheque deposits, runs
+    │   ├── advice.py          ←   remittance advices: csv / txt / pdf / xlsx
+    │   ├── ledger.py          ←   item identity, ownership and running balances
+    │   ├── refs.py            ←   reference extraction (continuations, truncation)
+    │   ├── excepts.py         ←   which exception explains the difference
+    │   └── cats.py            ←   the category of a line that settles nothing
     ├── pipeline.py            ← process: phase → build artifact
     ├── hooks.py               ← observe-only decision hooks (`process --trace`)
     ├── insights.py            ← golden vs submission diff: the `--explain` report
+    ├── experiments.py         ← provenance, run list, `compare` (no MLflow server)
+    ├── stages.py              ← preprocessing runs: metrics + report files + provenance
+    ├── documents.py           ← preprocessing report: parsed docs, integrity, attachment
     ├── builds.py              ← build repository: naming, sidecars, index
     ├── evaluate.py            ← official scorer wrapper + per-segment report
     └── submit.py              ← presigned S3 upload + the human confirmation gate
@@ -305,6 +375,33 @@ duplicate `(bank_txn_id, item_id)`, and a line cannot mix item rows and a catego
 ---
 
 ## 8. Where to implement what
+
+### Two engines: `--engine alt` (default) and `--engine baseline`
+
+`process` picks the matcher:
+
+```bash
+make process PHASE=sample                      # alt   (operation-first)
+$(PY) -m bankrec process --phase sample --engine baseline
+```
+
+| engine | sample score | alloc F1 | txn acc | exception macro-F1 |
+|---|---|---|---|---|
+| `baseline` (`matching.py` + `rules.py`) | 39.56 | 0.490 | 0.469 | 0.048 |
+| `alt` (`alt/engine.py`) | **73.60** | 0.830 | 0.734 | 0.504 |
+
+They answer the same question in opposite orders. The baseline asks *which items could
+this line settle* and then checks whether a subset adds up. `alt` asks **what kind of
+banking operation is this line** first, because for four of the hardest segments the item
+list is not something to infer at all — it is written down in `direct_debit_batches/`,
+`card_settlements/`, `cheque_deposits/`, `payment_runs/` or a remittance advice, and the
+only real question is which file row belongs to which bank line. Its resolvers run in
+order of how much the evidence can be trusted (batch/run id → advice reference → amount
+fallback → references in the text → payer and amount), and the inference resolvers are
+arbitrated by *which proposal actually adds up to the cash* rather than by their order.
+
+The baseline is kept, runnable and unchanged: it is the control for every measurement,
+and `--engine baseline` still reproduces 39.56 exactly.
 
 ### `matching.py` — what does this bank line settle?
 
