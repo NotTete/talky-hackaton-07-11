@@ -265,10 +265,10 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
 <dl class="spec">
     <div><dt>phase</dt><dd>sample</dd></div>
     <div><dt>bank lines</dt><dd>8,499</dd></div>
-    <div><dt>rows out</dt><dd>33,361<small>31,631 item · 1,730 cat</small></dd></div>
-    <div><dt>score</dt><dd>74.31<small>of 100</small></dd></div>
+    <div><dt>rows out</dt><dd>33,379<small>31,649 item · 1,730 cat</small></dd></div>
+    <div><dt>score</dt><dd>74.37<small>of 100</small></dd></div>
     <div><dt>precision / recall</dt><dd>0.888<small>0.788</small></dd></div>
-    <div><dt>csv sha256</dt><dd>383125021ec1<small>1390 kB</small></dd></div>
+    <div><dt>csv sha256</dt><dd>952ca8ac04b4<small>1391 kB</small></dd></div>
   </dl>
 
 <section class="figwrap" aria-label="Pipeline diagram">
@@ -593,9 +593,9 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
         <caption>exception codes (closed list of 10)</caption>
         <thead><tr><th>code</th><th>in code</th><th>emitted</th><th>why</th></tr></thead>
         <tbody>
-          <tr><td class="mono live">PARTIAL</td><td class="mono acc">yes</td><td class="n">1,320</td><td class="wrap">item still open after this line, and no specific reason applies</td></tr>
+          <tr><td class="mono live">PARTIAL</td><td class="mono acc">yes</td><td class="n">1,304</td><td class="wrap">item still open after this line, and no specific reason applies</td></tr>
           <tr><td class="mono live">OVERPAYMENT</td><td class="mono acc">yes</td><td class="n">120</td><td class="wrap">cash above the open balance of a single item</td></tr>
-          <tr><td class="mono live">SHORT_DISCOUNT</td><td class="mono acc">yes</td><td class="n">178</td><td class="wrap">payment terms grant that percentage and the cash arrived within the window</td></tr>
+          <tr><td class="mono live">SHORT_DISCOUNT</td><td class="mono acc">yes</td><td class="n">177</td><td class="wrap">payment terms grant that percentage and the cash arrived within the window</td></tr>
           <tr><td class="mono live">SHORT_BANK_CHARGES</td><td class="mono acc">yes</td><td class="n">4</td><td class="wrap">shortfall within 60 EUR and 2 percent, payer in another country</td></tr>
           <tr><td class="mono live">SHORT_WITHHOLDING</td><td class="mono acc">yes</td><td class="n">1</td><td class="wrap">10, 1.5 or 1.25 percent of the total, in a country that withholds</td></tr>
           <tr><td class="mono live">SHORT_DISPUTE</td><td class="mono acc">yes</td><td class="n">113</td><td class="wrap">the advice names a dispute reason; the rest stays open</td></tr>
@@ -633,12 +633,12 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
       <div class="note note-info"><dt>note</dt><dd><code>process --trace</code> runs a <code>DecisionHook</code> after the matcher has already decided (it observes, it cannot settle an item — that would break the chronological book in the index stage) and writes which rule fired and how many candidates it had per line. <code>evaluate --explain</code> reads that sidecar and the golden file to turn the score into a report: which failure kind lost the most lines, and which rule to fix next.</dd></div>
     </div>
       <table class="tbl">
-        <caption>score 74.31 = 100 × (0.50 F1 + 0.30 accuracy + 0.20 macro F1)</caption>
+        <caption>score 74.37 = 100 × (0.50 F1 + 0.30 accuracy + 0.20 macro F1)</caption>
         <thead><tr><th>component</th><th>weight × value</th><th>points</th><th>share of its own maximum</th></tr></thead>
         <tbody>
-          <tr><td class="mono">allocation F1</td><td class="mono">0.50 × 0.8348</td><td class="n">41.74</td><td class="cell"><span class="bar" style="width:100.0%"></span></td></tr>
-          <tr><td class="mono">transaction accuracy</td><td class="mono">0.30 × 0.7474</td><td class="n">22.42</td><td class="cell"><span class="bar" style="width:74.7%"></span></td></tr>
-          <tr><td class="mono">exception macro F1</td><td class="mono">0.20 × 0.5071</td><td class="n">10.14</td><td class="cell"><span class="bar soft" style="width:50.7%"></span></td></tr>
+          <tr><td class="mono">allocation F1</td><td class="mono">0.50 × 0.8352</td><td class="n">41.76</td><td class="cell"><span class="bar" style="width:100.0%"></span></td></tr>
+          <tr><td class="mono">transaction accuracy</td><td class="mono">0.30 × 0.7488</td><td class="n">22.46</td><td class="cell"><span class="bar" style="width:74.9%"></span></td></tr>
+          <tr><td class="mono">exception macro F1</td><td class="mono">0.20 × 0.5070</td><td class="n">10.14</td><td class="cell"><span class="bar soft" style="width:50.7%"></span></td></tr>
         </tbody>
       </table>
       <table class="tbl">
@@ -665,12 +665,12 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
       <div class="term">
         <div class="term-top"><b>real output</b><span>sample phase</span></div>
         <pre><span class="p">$</span> make process PHASE=sample
-<span class="o">[sample] 8,499 bank lines, 65,846 items -&gt; builds/20261107-1355-38312502-ret-rel.csv.gz</span>
-<span class="o">[sample] 8,499 lines -&gt; 31,631 item rows + 1,730 category rows</span>
+<span class="o">[sample] 8,499 bank lines, 65,846 items -&gt; builds/20261107-1410-952ca8ac-cn-ref.csv.gz</span>
+<span class="o">[sample] 8,499 lines -&gt; 31,649 item rows + 1,730 category rows</span>
 
 <span class="p">$</span> make evaluate PHASE=sample
-<span class="o">score  74.31 | alloc F1 0.8348 (P 0.8880 / R 0.7877)</span>
-<span class="o">33,361 rows over 8,499/8,499 lines</span>
+<span class="o">score  74.37 | alloc F1 0.8352 (P 0.8881 / R 0.7883)</span>
+<span class="o">33,379 rows over 8,499/8,499 lines</span>
 
 <span class="p">$</span> python -m bankrec whoami
 <span class="o">{"team": "...", "status": "..."}   # GET /api/me, uses no upload slot</span>
@@ -678,9 +678,9 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
 <span class="p">$</span> make push PHASE=LIVE
 <span class="o">-- about to spend a LIVE submission ------------------------------</span>
   phase            LIVE  (public leaderboard, repeatable)
-  rows             33,361
-  uncompressed     1390 kB  (packed 334 kB)
-  sha256 (csv)     383125021ec13cb3c3439e13971dda50b95e9aa61404a7a2274fec206f643fea
+  rows             33,379
+  uncompressed     1391 kB  (packed 334 kB)
+  sha256 (csv)     952ca8ac04b4c5d80c40e456a8a35619cea1afefabd257ae9ef2f6c07f5dd512
 <span class="p">Type 'LIVE' to upload, anything else aborts:</span>
 <span class="o"># nothing was typed, so nothing was uploaded, and no slot was spent</span></pre>
       </div>
@@ -714,12 +714,12 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
           <tr><td class="mono acc">ap_payment_multi</td><td class="n">787</td><td class="n">0.924</td><td class="cell"><span class="bar soft" style="width:36.5%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
           <tr><td class="mono acc">ap_payment_single</td><td class="n">458</td><td class="n">0.980</td><td class="cell"><span class="bar soft" style="width:21.3%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
           <tr><td class="mono acc">nonitem_bank_fees</td><td class="n">437</td><td class="n">0.993</td><td class="cell"><span class="bar soft" style="width:20.3%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
-          <tr><td class="mono acc">ar_1toN_text</td><td class="n">349</td><td class="n">0.645</td><td class="cell"><span class="bar soft" style="width:16.2%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
+          <tr><td class="mono acc">ar_1toN_text</td><td class="n">349</td><td class="n">0.648</td><td class="cell"><span class="bar soft" style="width:16.2%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
           <tr><td class="mono acc">ar_same_amount_fifo</td><td class="n">256</td><td class="n">0.805</td><td class="cell"><span class="bar soft" style="width:11.9%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
-          <tr><td class="mono acc">ar_short_discount</td><td class="n">218</td><td class="n">0.812</td><td class="cell"><span class="bar soft" style="width:10.1%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
+          <tr><td class="mono acc">ar_short_discount</td><td class="n">218</td><td class="n">0.807</td><td class="cell"><span class="bar soft" style="width:10.1%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
           <tr><td class="mono acc">ar_dd_returned</td><td class="n">202</td><td class="n">0.772</td><td class="cell"><span class="bar soft" style="width:9.4%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
-          <tr><td class="mono mono">ar_1toN_credit_note</td><td class="n">199</td><td class="n">0.372</td><td class="cell"><span class="bar" style="width:9.2%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
-          <tr><td class="mono acc">ar_instalment</td><td class="n">186</td><td class="n">0.694</td><td class="cell"><span class="bar soft" style="width:8.6%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
+          <tr><td class="mono mono">ar_1toN_credit_note</td><td class="n">199</td><td class="n">0.432</td><td class="cell"><span class="bar" style="width:9.2%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
+          <tr><td class="mono acc">ar_instalment</td><td class="n">186</td><td class="n">0.688</td><td class="cell"><span class="bar soft" style="width:8.6%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
           <tr><td class="mono acc">ar_same_amount_month</td><td class="n">185</td><td class="n">0.681</td><td class="cell"><span class="bar soft" style="width:8.6%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
           <tr><td class="mono mono">ar_partial</td><td class="n">174</td><td class="n">0.299</td><td class="cell"><span class="bar" style="width:8.1%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
           <tr><td class="mono mono">unidentified</td><td class="n">152</td><td class="n">0.434</td><td class="cell"><span class="bar" style="width:7.1%"></span></td><td class="wrap dead">evaluate --explain</td></tr>
