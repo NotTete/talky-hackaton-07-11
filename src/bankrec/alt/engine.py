@@ -28,11 +28,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..data import FX, Masters, Phase
+from ..schema import WITHHOLDING_RATES
 from ..text import alnum, fold
 from . import advice as advice_mod
 from . import refs
 from .cats import Categories
-from .excepts import Exceptions
+from .excepts import WITHHOLDING_COUNTRIES, Exceptions
 from .ledger import Ledger
 from .ops import DIRECTION, Operations, select as select_entries
 
@@ -47,12 +48,16 @@ FX_TOL_PCT = 0.03
 
 # Text that says the money came back. Every scheme has its own word for it.
 RETURN_WORDS = (
-    "DEVOLUCION", "DEVOLUCIÓN", "DEVUELTO", "IMPAYE", "IMPAYÉ", "RETOUR", "RUECKLASTSCHRIFT",
-    "RUCKLASTSCHRIFT", "RETURNED", "RETURN", "CHARGEBACK", "CONTRACARGO", "REJECT", "RECHAZO",
-    "UNPAID", "R-TRANSACTION", "RIMBORSO", "RETROCESSION", "STORNO",
+    "DEVOL", "DEVUELT", "IMPAYE", "IMPAYÉ", "RETOUR", "RUECKLASTSCHRIFT", "RUCKLASTSCHRIFT",
+    "RETURNED", "RETURN", "CHARGEBACK", "CONTRACARGO", "REJECT", "RECHAZ", "UNPAID",
+    "R-TRANSACTION", "RIMBORSO", "RETROCESSION", "STORNO",
 )
 # ... but a *bank* reversal is a category, not a returned item (POLICIES §4).
 REVERSAL_WORDS = ("OPERACION INDEBIDA", "OPERACIÓN INDEBIDA", "ANULACION OPERACION", "BANK ERROR")
+# ... and a *credit* that says "devolución" is usually the opposite of a return: the
+# customer sending back the guarantee retention, or re-paying a receipt that bounced.
+# A collection that came back is always a debit.
+NOT_RETURN_WORDS = ("GARANTIA", "GARANTÍA", "RETENCION", "RETENCIÓN", "RETENTION")
 
 
 @dataclass(slots=True)
@@ -81,6 +86,7 @@ class Engine:
         self.ops = Operations(phase)
         self.advices = advice_mod.AdviceIndex(advice_mod.load(phase), self.ledger)
         self.items_by_id = self.ledger.items
+        self.masters = masters
         self.cats = Categories(masters)
         self.excepts = Exceptions(masters, self.fx)
         self.stats: dict[str, int] = {}
@@ -259,6 +265,51 @@ class Engine:
         return self._rows_from_docs(found, ctx, amounts_known=False)
 
     # -------------------------------------------------------------- step 6
+    # A payment can be short by a documented percentage and still clear the invoice in
+    # full: withholding tax at source (§3) and an early-payment discount (payment_terms).
+    # The search therefore has to look for item sets summing to the cash *grossed up* by
+    # those rates, otherwise a Moroccan customer who withholds 10 % never matches
+    # anything at all -- which is why SHORT_WITHHOLDING scored a flat zero.
+    # Exactly the rates POLICIES.md names: 10 / 1.5 / 1.25 % withheld at source, and the
+    # 1 / 2 / 3 % early-payment discounts in payment_terms.csv. They are matched *tightly*
+    # (0.1 %), unlike the ordinary amount tolerance: a 1 % band around seven rates spanning
+    # 1-10 % would accept nearly any shortfall and turn every clean payment into a
+    # proportional one.
+    GROSS_UP = (0.10, 0.03, 0.02, 0.015, 0.0125, 0.01)
+    GROSS_UP_TOL_PCT = 0.001
+
+    def _targets(self, cash: int, item_ids: list[str] | None = None) -> list[tuple[int, int]]:
+        """[(target, tolerance)] -- the cash itself, then the cash grossed up by each rate.
+
+        A rate is only offered when *these* items could carry it: withholding only for a
+        customer in a country that withholds, a discount only when the invoice's own
+        payment terms grant that percentage. Offering all six rates to every line makes
+        the search find a plausible-looking subset for almost any amount, and then every
+        item in it comes out short and mislabelled `PARTIAL`.
+        """
+        out = [(cash, _tol(cash))]
+        for rate in self._rates_for(item_ids):
+            grossed = int(round(cash / (1 - rate)))
+            out.append((grossed, max(MATCH_TOL_MIN, int(round(grossed * self.GROSS_UP_TOL_PCT)))))
+        return out
+
+    def _rates_for(self, item_ids: list[str] | None) -> list[float]:
+        if item_ids is None:
+            return list(self.GROSS_UP)
+        rates: set[float] = set()
+        for item_id in item_ids:
+            item = self.ledger.item(item_id)
+            if self.excepts.country.get(item.get("party_id") or "", "") in WITHHOLDING_COUNTRIES:
+                rates.update(WITHHOLDING_RATES)
+            terms = self.masters.terms.get(item.get("payment_terms") or "")
+            pct = terms.get("early_payment_discount_pct") if terms else None
+            if pct:
+                try:
+                    rates.add(round(float(pct) / 100.0, 6))
+                except (TypeError, ValueError):
+                    pass
+        return [r for r in self.GROSS_UP if r in rates]
+
     def _by_party_amount(self, ctx: _Context) -> list[Row]:
         """No usable reference: the payer's open items that add up to the cash (§5.6)."""
         cash = abs(ctx.cash)
@@ -282,9 +333,11 @@ class Engine:
                 return self._rows_from_docs([(unique[0], cash, "INVOICE")], ctx)
             return []
 
-        subset = _subset(candidates, cash, self._opens(candidates, ctx), _tol(cash))
-        if subset:
-            return self._rows_from_docs([(i, 0, "INVOICE") for i in subset], ctx, amounts_known=False)
+        opens = self._opens(candidates, ctx)
+        for target, tol in self._targets(cash, candidates):
+            subset = _subset(candidates, target, opens, tol)
+            if subset:
+                return self._rows_from_docs([(i, 0, "INVOICE") for i in subset], ctx, amounts_known=False)
         return []
 
     def _by_party_sweep(self, ctx: _Context) -> list[Row]:
@@ -309,7 +362,11 @@ class Engine:
                 continue
             opens = self._opens(open_items, ctx)
             total = sum(sign.get(self.ledger.item(i)["kind"], 1) * opens[i] for i in open_items)
-            if abs(total - cash) <= _tol(cash, self._any_cross(open_items, ctx)):
+            cross = self._any_cross(open_items, ctx)
+            if any(
+                abs(total - target) <= max(tol, _tol(target, cross) if target == cash else tol)
+                for target, tol in self._targets(cash, open_items)
+            ):
                 return self._rows_from_docs([(i, 0, "INVOICE") for i in open_items], ctx, amounts_known=False)
         return []
 
@@ -517,8 +574,25 @@ class Engine:
         out: dict[str, tuple[int, str]] = {i: (opens[i], unique[i][1]) for i in notes}
 
         total = sum(opens[i] for i in invoices)
-        if invoices and abs(total - target) <= _tol(target, ctx.cross(self, order)):
-            out.update({i: (opens[i], unique[i][1]) for i in invoices})
+        cross = ctx.cross(self, order)
+        grossed = next(
+            (
+                g
+                for g, tol in self._targets(target, invoices)
+                if abs(total - g) <= (_tol(g, cross) if g == target else tol)
+            ),
+            0,
+        )
+        if invoices and grossed:
+            # The cash covers the invoices exactly, or falls short of them by a uniform
+            # documented percentage (a discount taken on the whole payment, tax withheld
+            # at source). Share the *cash* in proportion, never the open balances: it is
+            # the per-item shortfall that lets `decide` name SHORT_DISCOUNT /
+            # SHORT_WITHHOLDING / SHORT_BANK_CHARGES and then write the full amount.
+            # Handing it the full balance hides the very difference it has to explain.
+            out.update(
+                {i: (_round_to(opens[i], target, total), unique[i][1]) for i in invoices}
+            )
         elif len(invoices) == 1:
             # One named invoice simply receives the whole cash: decide() explains the gap.
             out[invoices[0]] = (target, unique[invoices[0]][1])
@@ -595,7 +669,16 @@ class _Context:
         # disambiguator for a subset-sum (ops.select).
         count = _COUNT_RE.search(self.text)
         self.want_count = int(count.group(1)) if count else 0
-        self.is_return = _hit(self.text, RETURN_WORDS) and not _hit(self.text, REVERSAL_WORDS)
+        self.is_return = (
+            _hit(self.text, RETURN_WORDS)
+            and not _hit(self.text, REVERSAL_WORDS)
+            and not _hit(self.text, NOT_RETURN_WORDS)
+            # Direction decides: a returned collection debits us, a returned transfer
+            # credits us back. A *credit* that merely contains "devolución" is a
+            # retention release or a re-payment, and re-opening an item for it is wrong
+            # twice over (the pair and the exception).
+            and (self.cash < 0 or _hit(self.text, ("TRANSFERENCIA DEVUELTA", "RETURNED TRANSFER")))
+        )
 
         self._scope: list[str] | None = None
         owner = engine.ledger.party_for_iban(txn.get("counterparty_account") or "")
@@ -649,6 +732,13 @@ def _payer_candidates(text: str) -> list[str]:
         if marker in text:
             out.append(text.split(marker, 1)[1].split("|")[0][:60])
     return out
+
+
+def _round_to(part: int, target: int, total: int) -> int:
+    """`part` of `total`, rescaled so the parts add up to `target`."""
+    if total <= 0 or target == total:
+        return part
+    return int(round(part * target / total))
 
 
 def _close(a: int, b: int, pct: float = 0.01) -> bool:

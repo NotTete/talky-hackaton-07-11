@@ -73,6 +73,9 @@ class Exceptions:
     def __init__(self, masters, fx):
         self.masters = masters
         self.fx = fx
+        self.entity_country: dict[str, str] = {}
+        if not masters.bank_accounts.is_empty():
+            pass
         self.country: dict[str, str] = {}
         for df, id_col in ((masters.customers, "customer_id"), (masters.suppliers, "supplier_id")):
             if df.is_empty() or "country" not in df.columns:
@@ -171,12 +174,30 @@ class Exceptions:
         )
 
     def _is_bank_charge(self, txn: dict, item: dict, shortfall: int) -> bool:
-        """§3: a non-SEPA intermediary fee, <= 60 EUR equivalent and <= 2 % of the item."""
+        """§3: an intermediary bank deducted its fee on a cross-border (SHA/BEN) transfer:
+        at most 60 EUR equivalent and at most 2 % of the item.
+
+        "Cross-border" is read as *the payer is in another country than the invoicing
+        entity*, not as "outside SEPA": the golden's own cases include GB and CH payers,
+        who are inside SEPA but still route through a correspondent that charges. The
+        test that actually matters is the one below it -- a shortfall that equals the
+        invoice's own early-payment discount is a refused discount (`ar_discount_late`),
+        not a bank fee, and must stay `PARTIAL`.
+        """
         country = self.country.get(item.get("party_id") or "", "")
-        if not country or country in SEPA_COUNTRIES:
+        entity_country = _ENTITY_COUNTRY.get(item.get("entity") or "", "")
+        if not country or (entity_country and country == entity_country):
             return False
         if shortfall > int(round(item["total_cents"] * BANK_CHARGE_MAX_PCT)):
             return False
+        terms = self.masters.terms.get(item.get("payment_terms") or "")
+        if terms and terms.get("early_payment_discount_pct"):
+            try:
+                expected = int(round(item["total_cents"] * float(terms["early_payment_discount_pct"]) / 100.0))
+            except (TypeError, ValueError):
+                expected = 0
+            if expected and _close(shortfall, expected, pct=0.02, floor=2):
+                return False
         eur = self.fx.convert(shortfall, item.get("currency") or "EUR", "EUR", _ymd(txn.get("booking_date")))
         return (eur if eur is not None else shortfall) <= BANK_CHARGE_MAX_EUR_CENTS
 
@@ -190,6 +211,16 @@ class Exceptions:
         late-delivery penalty that no keyword list written from the spec contains.)
         """
         return bool(reason.strip()) and not _has(reason.upper(), DISCOUNT_WORDS)
+
+
+# entity -> country, from masters/entities.csv. Hard-coded here rather than loaded
+# because it is the group's own legal structure, not data that varies per phase, and it
+# is only ever used as "is the payer abroad".
+_ENTITY_COUNTRY = {
+    "ES00": "ES", "ES01": "ES", "ES02": "ES", "PT01": "PT", "FR01": "FR", "IT01": "IT",
+    "DE01": "DE", "NL01": "NL", "UK01": "GB", "PL01": "PL", "CH01": "CH", "US01": "US",
+    "MX01": "MX", "BR01": "BR", "MA01": "MA", "CN01": "CN", "AU01": "AU", "ZA01": "ZA",
+}
 
 
 def _has(text: str, needles: tuple[str, ...]) -> bool:
