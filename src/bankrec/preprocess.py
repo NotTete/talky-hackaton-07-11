@@ -413,7 +413,14 @@ def load_advices(phase: Phase) -> list[Advice]:
         if not parser:
             out.append(Advice(path=rel, entity=row.get("entity") or "", payer_name=row.get("payer_name") or "", received_ymd=_ymd(row.get("received_date") or ""), fmt=fmt, error=f"unknown format {fmt}"))
             continue
-        advice = parser(root / rel)
+        path = root / rel
+        if not path.exists():
+            # train-lite ships the full index but only a subset of raw files, so an index
+            # row can point at a file the split does not carry. Keep the row (dropping it
+            # would hide the gap from documents.py) but do not crash the phase.
+            out.append(Advice(path=rel, entity=row.get("entity") or "", payer_name=row.get("payer_name") or "", received_ymd=_ymd(row.get("received_date") or ""), fmt=fmt, error="missing file"))
+            continue
+        advice = parser(path)
         if advice is None:
             # keep the index entry: a dropped file is invisible in the report and cannot be
             # handed to whoever writes the extractor (see documents.py).

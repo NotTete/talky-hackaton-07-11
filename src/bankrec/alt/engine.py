@@ -85,7 +85,11 @@ def _tol(cents: int, cross_currency: bool = False) -> int:
 
 
 class Engine:
-    def __init__(self, phase: Phase, items, masters: Masters):
+    def __init__(self, phase: Phase, items, masters: Masters, pdf=None):
+        # `pdf` is optional evidence from src/bankrec/pdf (facts built by `pdf-facts`).
+        # It can only *add* a resolution nobody else can see: a document number that a
+        # PDF says was cancelled and replaced. Everything else stays CSV + ledger.
+        self.pdf = pdf
         self.masters = masters
         self.fx = FX(masters.fx_rates)
         self.ledger = Ledger(items, masters)
@@ -139,6 +143,10 @@ class Engine:
                 best = (gap, name, rows)
         if best is not None:
             return self._accept(best[1], best[2])
+
+        rows = self._supplier_refund(ctx)
+        if rows:
+            return self._accept("supplier_refund", rows)
 
         category = self.cats.of(txn)
         self.stats[f"category:{category}"] = self.stats.get(f"category:{category}", 0) + 1
@@ -356,18 +364,72 @@ class Engine:
             unique = [
                 i
                 for i in self.ledger.by_amount(cash, _tol(cash))
-                if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == side
+                if self.ledger.open_cents(i) > 0
+                and self.ledger.item(i)["side"] == side
+                # A lone amount coincidence never pays a credit note: a bank fee of
+                # -19.21 is not the settlement of a -19.21 supplier credit note.
+                and self.ledger.item(i)["kind"] != "credit_note"
             ]
             if len(unique) == 1:
                 return self._rows_from_docs([(unique[0], cash, "INVOICE")], ctx)
             return []
 
         opens = self._opens(candidates, ctx)
+        # A customer with open credit notes pays "invoices minus credit notes" (POLICIES §2).
+        # Try that reading first, per party: the invoices (oldest first) must add up to the
+        # cash *plus* the party's notes. Without it the plain FIFO below finds a different,
+        # equally exact set of invoices and silently drops the notes.
+        for party_id in ctx.parties:
+            mine = [i for i in candidates if self.ledger.item(i).get("party_id") == party_id]
+            notes = [i for i in mine if self.ledger.item(i)["kind"] == "credit_note"]
+            invoices = [i for i in mine if self.ledger.item(i)["kind"] != "credit_note"]
+            if not notes or not invoices:
+                continue
+            if any(
+                0 < len(_subset(invoices, t, opens, tl)) <= 3 for t, tl in self._targets(cash, invoices)
+            ):
+                continue  # a few invoices alone already explain the cash: no note was netted
+            note_total = sum(opens[i] for i in notes)
+            for target, tol in self._targets(cash + note_total, invoices):
+                subset = _subset(invoices, target, opens, tol)
+                # One invoice + one note is too easy to hit by coincidence.
+                if len(subset) >= 2:
+                    return self._rows_from_docs(
+                        [(i, 0, "INVOICE") for i in notes + subset], ctx, amounts_known=False
+                    )
         for target, tol in self._targets(cash, candidates):
             subset = _subset(candidates, target, opens, tol)
             if subset:
                 return self._rows_from_docs([(i, 0, "INVOICE") for i in subset], ctx, amounts_known=False)
         return []
+
+    def _supplier_refund(self, ctx: _Context) -> list[Row]:
+        """A receipt from a supplier that equals one of its open credit notes (POLICIES §2).
+
+        The supplier pays back what a credit note says it owes us. Last resort, so it only
+        sees lines nothing else explained; the PDF can veto it when the credit note says it
+        is to be *offset* against future invoices instead of refunded.
+        """
+        if ctx.cash <= 0:
+            return []
+        hits = []
+        for party_id in ctx.parties:
+            for i in self.ledger.party_items(party_id):
+                item = self.ledger.item(i)
+                if item["kind"] != "credit_note" or item["side"] != "AP":
+                    continue
+                open_cents = self._in_currency(i, ctx.currency, ctx.ymd)
+                if open_cents > 0 and abs(open_cents - ctx.cash) <= _tol(ctx.cash):
+                    hits.append(i)
+        if len(hits) != 1:
+            return []
+        if self.pdf is not None:
+            item = self.ledger.item(hits[0])
+            clauses = self.pdf.clauses_for_item(item)
+            if any(c.get("code") == "credit_note" and c.get("direction") == "offset" for c in clauses):
+                return []
+        item = self.ledger.item(hits[0])
+        return [Row(hits[0], self._to_item(ctx.cash, {"currency": ctx.currency}, item["currency"], ctx.ymd), "")]
 
     def _by_party_sweep(self, ctx: _Context) -> list[Row]:
         """The payer cleared *everything* they had open.
@@ -441,6 +503,20 @@ class Engine:
                     return narrowed
                 if len(hit) == 1:
                     return hit
+        if self.pdf is not None:
+            # "esta factura anula y sustituye a la factura X": a payment that cites the
+            # cancelled X belongs to its replacement, and X is in no CSV column. Only used
+            # as a fallback, so a citation that still resolves to an open item wins.
+            for token in refs.extract(ref) or [alnum(ref)]:
+                replacement = self.pdf.replacement_for(token)
+                if not replacement:
+                    continue
+                cited = [i for i in self.ledger.by_doc(token) if not self.ledger.is_settled(i)]
+                if cited:
+                    break
+                target = [i for i in self.ledger.by_doc(replacement) if not self.ledger.is_settled(i)]
+                if len(target) == 1:
+                    return target
         for token in refs.extract(ref) or [alnum(ref)]:
             # Our prefix dropped: "FRAS 0414882" for FV25-0414882.
             hit = self._narrow(self.ledger.by_doc_suffix(token), scope_set, ctx)

@@ -3,7 +3,7 @@ PY ?= $(shell if [ -x .devenv/state/venv/bin/python ]; then echo .devenv/state/v
               elif command -v python3 >/dev/null; then echo python3; else echo python; fi)
 export PYTHONPATH := src
 
-.PHONY: help data data-lite data-all list verify doctor process evaluate explain push builds validate test lint map map-check map-serve whoami result runs compare report documents stages
+.PHONY: help data data-lite data-all list verify doctor pdf-facts process evaluate explain push builds validate test lint map map-check map-serve whoami result runs compare report documents stages
 
 help:
 	@echo "make data        docs + masters + 1-month sample (~10 MB download)"
@@ -11,6 +11,7 @@ help:
 	@echo "make data-all    + TRAIN, LIVE, FINAL when published (~1.2 GB)"
 	@echo "make list        what is downloaded / extracted / missing"
 	@echo ""
+	@echo "make pdf-facts PHASE=sample      parse PDFs into facts (optional evidence)"
 	@echo "make process PHASE=sample [NAME=baseline] [TRACE=1]   build an artifact into builds/"
 	@echo "make evaluate [BUILD=<id>] [PHASE=sample]   score / coverage-check it"
 	@echo "make explain [BUILD=<id>] [EXAMPLES=3]       plain-English report: where lines/pairs are lost"
@@ -52,8 +53,11 @@ verify:
 doctor:
 	$(PY) -m bankrec doctor
 
+pdf-facts:
+	$(PY) -m bankrec pdf-facts --phase $(PHASE) $(if $(NAME),--note "$(NAME)",) --record
+
 process:
-	$(PY) -m bankrec process --phase $(PHASE) $(if $(NAME),--name $(NAME),) $(if $(TRACE),--trace,) $(if $(NOTE),--note "$(NOTE)",) $(if $(TAG),--tag $(TAG),)
+	$(PY) -m bankrec process --phase $(PHASE) $(if $(NAME),--name $(NAME),) $(if $(TRACE),--trace,) $(if $(NOTE),--note "$(NOTE)",) $(if $(TAG),--tag $(TAG),) $(if $(PDF_FACTS),--pdf-facts,)
 
 evaluate:
 	$(PY) -m bankrec evaluate $(BUILD) $(if $(PHASE),--phase $(PHASE),)

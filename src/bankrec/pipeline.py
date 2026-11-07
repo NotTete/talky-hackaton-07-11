@@ -48,6 +48,7 @@ def process(
     hooks: list[DecisionHook] | None = None,
     note: str = "",
     tags: list[str] | None = None,
+    pdf_facts=None,
 ) -> Build:
     """Build one submission and publish it as an immutable build artifact.
 
@@ -64,6 +65,13 @@ def process(
     txns = phase.bank_transactions()
     if limit:
         txns = txns.head(limit)
+    if pdf_facts is None and getattr(settings, "use_pdf_facts", False):
+        from .pdf.facts import load as load_pdf_facts
+
+        pdf_facts = load_pdf_facts(phase)
+        if len(pdf_facts) == 0:
+            print(f"[{phase.name}] no pdf facts cache: run `bankrec pdf-facts --phase {phase.name}`", file=sys.stderr)
+            pdf_facts = None
     context = DocumentContext(phase)
     advices = AdviceIndex(load_advices(phase))
     document_report = structure(phase, context, advices.advices)
@@ -72,7 +80,7 @@ def process(
         # document that already lists its items. See src/bankrec/alt/engine.py. The
         # baseline's DocumentContext/AdviceIndex are still built above because the build
         # report describes the *documents of the phase*, which neither engine owns.
-        matcher = Engine(phase, items, masters)
+        matcher = Engine(phase, items, masters, pdf=pdf_facts)
     else:
         matcher = Matcher(ItemIndex(items, masters), context, advices)
 

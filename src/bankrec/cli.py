@@ -82,13 +82,16 @@ def _resolve(builds: Builds, ref: str | None, phase: str | None) -> Build:
 
 
 def cmd_process(args) -> int:
+    settings = _settings(args)
+    if getattr(args, "pdf_facts", False):
+        settings.use_pdf_facts = True
     hooks = []
     if args.trace:
         from .hooks import TraceRecorder
 
         hooks.append(TraceRecorder(_settings(args).builds_dir))
     build = process(
-        _settings(args),
+        settings,
         args.phase,
         limit=args.limit,
         name=args.name,
@@ -225,6 +228,49 @@ def cmd_push(args) -> int:
     builds.mark_pushed(build.id, result)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     print(f"\nrecorded push in {builds.index_path}")
+    return 0
+
+
+# ---------------------------------------------------------------- pdf-facts
+
+
+def cmd_pdf_facts(args) -> int:
+    from .data import Phase
+    from .pdf.build import build_phase, report as facts_report
+    from .pdf.facts import from_pdf
+    from .stages import record
+
+    settings = _settings(args)
+    if args.explain:
+        doc = from_pdf(Path(args.explain), entity=args.entity or "", doc_type="")
+        print(json.dumps(doc.as_row(), indent=2, ensure_ascii=False))
+        return 0
+
+    phase = Phase(settings, args.phase)
+    facts, report = build_phase(phase, limit=args.limit, force=args.rebuild, workers=args.workers)
+    print(report.summary())
+    if args.record:
+        metrics = {
+            "documents": report.documents,
+            "with_number": report.with_number,
+            "with_total": report.with_total,
+            "arithmetic_ok": report.arithmetic_ok,
+            "parsed": report.parsed,
+            "cached": report.cached,
+            "seconds": round(report.seconds, 2),
+            **{f"clause_{k}": v for k, v in (report.clauses or {}).items()},
+            **{f"flag_{k}": v for k, v in (report.flags or {}).items()},
+        }
+        run = record(
+            "pdf_facts",
+            report.phase,
+            settings=settings,
+            note=args.note,
+            metrics=metrics,
+            reports=[Path(report.path), Path(report.path).with_name("pdf_facts.meta.json")],
+            warnings=[f"{k}={v}" for k, v in (report.flags or {}).items()],
+        )
+        print(f"\nrecorded stage {run.id}")
     return 0
 
 
@@ -432,6 +478,8 @@ def build_parser() -> argparse.ArgumentParser:
     _common(p)
     p.add_argument("--name", default="", help="optional label appended to the build id")
     p.add_argument("--limit", type=int, default=0, help="only the first N bank lines (dev)")
+    p.add_argument("--pdf-facts", action="store_true",
+                   help="use the PDF facts cache as extra evidence (see `bankrec pdf-facts`)")
     p.add_argument(
         "--engine",
         choices=["alt", "baseline"],
@@ -465,6 +513,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("whoami", help="check HK_TOKEN against /api/me (uploads nothing)")
     p.add_argument("--api", default="", help="override the API base URL")
     p.set_defaults(func=cmd_whoami)
+
+    p = sub.add_parser("pdf-facts", help="build/refresh the PDF facts cache and report")
+    _common(p)
+    p.add_argument("--limit", type=int, default=0, help="only the first N PDFs (dev)")
+    p.add_argument("--rebuild", action="store_true", help="re-parse even when the sha is unchanged")
+    p.add_argument("--workers", type=int, default=None)
+    p.add_argument("--record", action="store_true", help="record the run in the stage registry")
+    p.add_argument("--note", default="")
+    p.add_argument("--explain", type=Path, help="print the facts of one PDF and exit")
+    p.add_argument("--entity", default="", help="entity for --explain")
+    p.set_defaults(func=cmd_pdf_facts)
 
     p = sub.add_parser("builds", aliases=["ls"], help="list the build repository")
     _common(p)
