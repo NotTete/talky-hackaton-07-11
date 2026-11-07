@@ -143,7 +143,7 @@ class Engine:
     # -------------------------------------------------------------- step 0
     def _returned(self, ctx: _Context) -> list[Row]:
         """A return re-opens exactly the items of the operation that came back (§3)."""
-        if not _hit(ctx.text, RETURN_WORDS) or _hit(ctx.text, REVERSAL_WORDS):
+        if not ctx.is_return:
             return []
         op = self.ops.by_token(ctx.op_tokens)
         items: list[tuple[str, int]] = []
@@ -305,11 +305,18 @@ class Engine:
         """One document reference -> item ids. Exact first, then the noise of §5.5."""
         if not ref:
             return []
+        scope_set = set(scope)
         for token in refs.extract(ref) or [alnum(ref)]:
             hit = self.ledger.by_doc(token)
             if hit:
-                return hit
-        scope_set = set(scope)
+                # "2025-0217" is a *supplier's* invoice number: several suppliers use the
+                # same series, so an exact key can still be ambiguous. Narrow it with the
+                # beneficiary of the transfer before trusting it.
+                narrowed = self._narrow(hit, scope_set, ctx)
+                if narrowed:
+                    return narrowed
+                if len(hit) == 1:
+                    return hit
         for token in refs.extract(ref) or [alnum(ref)]:
             # Our prefix dropped: "FRAS 0414882" for FV25-0414882.
             hit = self._narrow(self.ledger.by_doc_suffix(token), scope_set, ctx)
@@ -378,6 +385,12 @@ class Engine:
         for item_id, cents, dtype in docs:
             if item_id not in unique:
                 unique[item_id] = (cents, dtype)
+        # §3: a duplicate is one invoice paid a second time. When a batch, a run or an
+        # advice lists an item the ledger already closed, the likelier explanation is an
+        # earlier allocation of ours, not the customer paying 95 receipts twice — and
+        # claiming DUPLICATE_PAYMENT there poisons both the line and the class's
+        # precision. Only a line that settles exactly one item may claim it.
+        allow_duplicate = len(unique) == 1 and not ctx.is_return
 
         # What the line owes each item, when the documents do not say it themselves.
         if not amounts_known:
@@ -388,8 +401,11 @@ class Engine:
             open_before = self.ledger.open_cents(item_id)
             if open_before <= 0:
                 # §3: already settled and paid again -> the *later* line is the duplicate.
-                if self.ledger.is_settled(item_id):
+                if self.ledger.is_settled(item_id) and allow_duplicate:
                     rows.append(Row(item_id, abs(cents) or item["total_cents"], "DUPLICATE_PAYMENT"))
+                    continue
+                if ctx.is_return:
+                    rows.append(Row(item_id, abs(cents) or item["total_cents"], "RETURNED"))
                     continue
                 open_before = item["total_cents"]
             cash = abs(cents) or open_before
@@ -474,7 +490,7 @@ class _Context:
     """Everything derived from one bank line, computed once."""
 
     __slots__ = ("txn", "text", "tokens", "op_tokens", "cash", "ymd", "party", "side",
-                 "reasons", "deductions", "want_count", "parties", "_scope")
+                 "reasons", "deductions", "want_count", "parties", "_scope", "is_return")
 
     def __init__(self, txn: dict, engine: Engine):
         self.txn = txn
@@ -498,6 +514,7 @@ class _Context:
         # disambiguator for a subset-sum (ops.select).
         count = _COUNT_RE.search(self.text)
         self.want_count = int(count.group(1)) if count else 0
+        self.is_return = _hit(self.text, RETURN_WORDS) and not _hit(self.text, REVERSAL_WORDS)
 
         self._scope: list[str] | None = None
         owner = engine.ledger.party_for_iban(txn.get("counterparty_account") or "")
