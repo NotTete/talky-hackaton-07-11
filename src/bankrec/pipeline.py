@@ -16,6 +16,7 @@ import sys
 import time
 from dataclasses import dataclass
 
+from .alt import Engine
 from .builds import Build, BuildWriter, Builds
 from .config import Settings
 from .data import Phase
@@ -40,6 +41,7 @@ def process(
     *,
     limit: int = 0,
     name: str = "",
+    engine: str = "alt",
 ) -> Build:
     """Build one submission and publish it as an immutable build artifact."""
     started = time.time()
@@ -51,9 +53,14 @@ def process(
     txns = phase.bank_transactions()
     if limit:
         txns = txns.head(limit)
-    context = DocumentContext(phase)
-    advices = AdviceIndex(load_advices(phase))
-    matcher = Matcher(ItemIndex(items, masters), context, advices)
+    if engine == "alt":
+        # The operation-first engine (bankrec.alt): classify the line, then read the
+        # document that already lists its items. See src/bankrec/alt/engine.py.
+        matcher = Engine(phase, items, masters)
+    else:
+        context = DocumentContext(phase)
+        advices = AdviceIndex(load_advices(phase))
+        matcher = Matcher(ItemIndex(items, masters), context, advices)
 
     print(
         f"[{phase.name}] {len(txns):,} bank lines, {len(items):,} items "
@@ -77,16 +84,21 @@ def process(
                 eta = (total - stats.lines) / rate if rate else 0
                 print(f"  {stats.lines:,}/{total:,} lines  {rate:,.0f}/s  eta {eta:,.0f}s", file=sys.stderr)
 
-            allocations = matcher.match(txn)
-            if allocations:
-                for row in allocations:
+            allocations = matcher.resolve(txn) if engine == "alt" else matcher.match(txn)
+            items_written = [row for row in allocations if getattr(row, "item_id", "")]
+            if items_written:
+                for row in items_written:
                     out.write([txn["bank_txn_id"], row.item_id, f"{row.cents / 100:.2f}", "", row.exception])
                     stats.item_rows += 1
                     key = f"item:{row.exception or 'clean'}"
                     stats.by_reason[key] = stats.by_reason.get(key, 0) + 1
             else:
-                category = category_for(txn, masters)
-                out.write([txn["bank_txn_id"], "", "", category, ""])
+                category = next(
+                    (row.category for row in allocations if getattr(row, "category", "")),
+                    "",
+                ) or category_for(txn, masters)
+                exception = next((row.exception for row in allocations if getattr(row, "category", "")), "")
+                out.write([txn["bank_txn_id"], "", "", category, exception])
                 stats.no_item_rows += 1
                 stats.by_reason[category] = stats.by_reason.get(category, 0) + 1
 

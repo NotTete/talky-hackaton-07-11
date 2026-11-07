@@ -81,7 +81,7 @@ def _resolve(builds: Builds, ref: str | None, phase: str | None) -> Build:
 
 
 def cmd_process(args) -> int:
-    build = process(_settings(args), args.phase, limit=args.limit, name=args.name)
+    build = process(_settings(args), args.phase, limit=args.limit, name=args.name, engine=args.engine)
     print(f"build   {build.id}")
     print(f"file    {build.path}")
     print(f"sha256  {build.sha256}")
@@ -280,6 +280,12 @@ def build_parser() -> argparse.ArgumentParser:
     _common(p)
     p.add_argument("--name", default="", help="optional label appended to the build id")
     p.add_argument("--limit", type=int, default=0, help="only the first N bank lines (dev)")
+    p.add_argument(
+        "--engine",
+        choices=["alt", "baseline"],
+        default="alt",
+        help="alt: operation-first (bankrec.alt); baseline: the conservative matcher",
+    )
     p.set_defaults(func=cmd_process)
 
     p = sub.add_parser("evaluate", aliases=["score"], help="score / coverage-check a build")
