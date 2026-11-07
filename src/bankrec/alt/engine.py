@@ -947,7 +947,7 @@ class _Context:
             # for a prefix before any of them is allowed to vote on tokens. Token voting
             # on "SPA SOL S.A." scores four Brazilian customers 1.0, because `name_tokens`
             # drops SPA as a legal form and every "...SOL..." covers the one token left.
-            for candidate in readings:
+            for candidate in (*readings, *_name_readings(self.text)):
                 if not candidate:
                     continue
                 for party_id in engine.ledger.parties_by_name_prefix(candidate):
@@ -994,6 +994,30 @@ def _payer_candidates(text: str) -> list[str]:
     for marker in _PAYER_MARKERS:
         if marker in text:
             out.append(text.split(marker, 1)[1].split("|")[0][:60])
+    return out
+
+
+def _name_readings(text: str) -> list[str]:
+    """Where a name can sit in a statement field, for a *prefix* lookup only.
+
+    Half the Spanish lines print the payer as "TRANSFERENCIA SEPA | 27945126-CLIMATIZACION
+    PUERTO ALCOR S. | L | PAGO JUNIO": no marker word, a tax id glued in front with a
+    hyphen, and the legal form spilling into the next field. So every field is offered
+    whole, without its first token, and without everything up to the first hyphen. This is
+    only safe because the consumer is `parties_by_name_prefix`, which answers "the masters
+    carry a party called exactly this, cut here" -- "PAGO JUNIO" simply matches nothing.
+    """
+    out: list[str] = []
+    for segment in text.split("|"):
+        segment = segment.strip()
+        if not segment:
+            continue
+        out.append(segment)
+        if "-" in segment:
+            out.append(segment.split("-", 1)[1].strip())
+        head, _, tail = segment.partition(" ")
+        if tail:
+            out.append(tail.strip())
     return out
 
 

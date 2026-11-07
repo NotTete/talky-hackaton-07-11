@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from bankrec.alt.engine import _name_readings
 from bankrec.alt.ledger import Ledger
 from bankrec.text import name_similarity, name_tokens
 
@@ -25,6 +26,7 @@ NAMES = {
     "CES01000014": "Villamar del Río Camping S.L.",
     "CES01001739": "Sierramayor Construcciones S.L.",
     "CES01000476": "Instalaciones Sierramayor S.A.",
+    "CES01000318": "Climatización Puerto Alcor S.L.",
 }
 
 
@@ -93,3 +95,20 @@ def test_a_proforma_is_not_an_invoice():
     # ... but a deposit whose whole concept is the bare word is an unexplained receipt.
     bare = {"amount_cents": 500000, "text": "INGRESO CAJERO SUC 0504 | ANTICIPO"}
     assert cats.of(bare) == "UNIDENTIFIED"
+
+
+def test_a_name_glued_behind_a_tax_id_is_still_a_name():
+    """"TRANSFERENCIA SEPA | 27945126-CLIMATIZACION PUERTO ALCOR S. | L | PAGO JUNIO".
+
+    No marker word, a tax id hyphenated in front, the legal form spilling into the next
+    field. 199 of the sample's missed lines looked like this.
+    """
+    text = "TRANSFERENCIA SEPA | 27945126-CLIMATIZACION PUERTO ALCOR S. | L | PAGO JUNIO"
+    found = {p for r in _name_readings(text) for p in _ledger().parties_by_name_prefix(r)}
+    assert found == {"CES01000318"}
+
+
+def test_free_text_fields_name_nobody():
+    """The readings are generous because the lookup is strict: junk matches nothing."""
+    for reading in _name_readings("TRANSFER INMEDIATA | PAGO JUNIO | LIQUIDACION"):
+        assert _ledger().parties_by_name_prefix(reading) == []
