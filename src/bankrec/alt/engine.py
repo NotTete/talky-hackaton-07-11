@@ -679,7 +679,7 @@ class Engine:
             return self._to_item(item["total_cents"], {"currency": currency}, item["currency"], ymd)
 
         opens = {i: max(opened(i), 0) for i in order}
-        notes = {i for i in order if self.ledger.item(i)["kind"] == "credit_note"}
+        notes = [i for i in order if self.ledger.item(i)["kind"] == "credit_note"]  # ordered: output order
         invoices = [i for i in order if i not in notes]
 
         target = abs(ctx.cash) + sum(opens[i] for i in notes)

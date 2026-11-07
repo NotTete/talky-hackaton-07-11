@@ -109,3 +109,10 @@ whoami:
 
 result:
 	$(PY) -m bankrec result $(SUB)
+
+# Regression ratchet (sample): fails if the output hash moved or the score/segments dropped.
+ratchet:
+	PYTHONPATH=src $(PY) scripts/ratchet.py
+
+ratchet-update:
+	PYTHONPATH=src $(PY) scripts/ratchet.py --update
