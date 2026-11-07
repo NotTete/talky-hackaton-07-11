@@ -80,25 +80,55 @@ class Engine:
         self.stats: dict[str, int] = {}
 
     # ------------------------------------------------------------------ api
+    # Document-backed resolvers. The document *is* the answer, so the first one that
+    # fires wins outright -- there is nothing better to compare it against.
+    DOCUMENT_STEPS = ("returned", "operation_id", "advice_ref", "operation_total", "advice_party")
+    # Inference resolvers. Each proposes a set of items; the winner is the one whose
+    # amounts actually add up to the cash, because "explains the whole line" is a far
+    # better signal than "is listed first". A truncated reference that resolves to one
+    # 1,265.84 invoice must not beat the 42-invoice sweep that sums to the 100,423.72
+    # on the statement.
+    INFERENCE_STEPS = ("reference", "party_sweep", "party_amount")
+
     def resolve(self, txn: dict) -> list[Row]:
         ctx = _Context(txn, self)
-        for name, step in (
-            ("returned", self._returned),
-            ("operation_id", self._operation_by_id),
-            ("advice_ref", self._advice_by_ref),
-            ("operation_total", self._operation_by_total),
-            ("advice_party", self._advice_by_party),
-            ("reference", self._by_reference),
-            ("party_amount", self._by_party_amount),
-        ):
-            rows = step(ctx)
+        steps = {
+            "returned": self._returned,
+            "operation_id": self._operation_by_id,
+            "advice_ref": self._advice_by_ref,
+            "operation_total": self._operation_by_total,
+            "advice_party": self._advice_by_party,
+            "reference": self._by_reference,
+            "party_sweep": self._by_party_sweep,
+            "party_amount": self._by_party_amount,
+        }
+        for name in self.DOCUMENT_STEPS:
+            rows = steps[name](ctx)
             if rows:
-                self.stats[name] = self.stats.get(name, 0) + 1
-                self._commit(rows)
-                return rows
+                return self._accept(name, rows)
+
+        tol = _tol(ctx.cash)
+        best: tuple[int, str, list[Row]] | None = None
+        for name in self.INFERENCE_STEPS:
+            rows = steps[name](ctx)
+            if not rows:
+                continue
+            gap = abs(_net(rows, self.ledger) - abs(ctx.cash))
+            if gap <= tol:
+                return self._accept(name, rows)
+            if best is None or gap < best[0]:
+                best = (gap, name, rows)
+        if best is not None:
+            return self._accept(best[1], best[2])
+
         category = self.cats.of(txn)
         self.stats[f"category:{category}"] = self.stats.get(f"category:{category}", 0) + 1
         return [Row(category=category, exception="UNIDENTIFIED" if category == "UNIDENTIFIED" else "")]
+
+    def _accept(self, name: str, rows: list[Row]) -> list[Row]:
+        self.stats[name] = self.stats.get(name, 0) + 1
+        self._commit(rows)
+        return rows
 
     def _commit(self, rows: list[Row]) -> None:
         """Move the ledger. `RETURNED` re-opens; everything else consumes."""
@@ -223,6 +253,32 @@ class Engine:
             return self._rows_from_docs([(i, 0, "INVOICE") for i in subset], ctx, amounts_known=False)
         return []
 
+    def _by_party_sweep(self, ctx: _Context) -> list[Row]:
+        """The payer cleared *everything* they had open.
+
+        Big accounts pay their whole ledger on a fixed day, and when they do there is no
+        advice and no reference worth parsing — but the sum is unmistakable, and it is the
+        only way to reach a 42-invoice receipt whose text says "FACTURA FV24-01199 FV24-01".
+        Credit notes net against the invoices, exactly as in `_share`.
+        """
+        cash = abs(ctx.cash)
+        if not ctx.party or not cash:
+            return []
+        open_items = [
+            i
+            for i in self.ledger.party_items(ctx.party)
+            if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == ctx.side
+        ]
+        if len(open_items) < 2:
+            return []
+        sign = {"invoice": 1, "credit_note": -1}
+        total = sum(
+            sign.get(self.ledger.item(i)["kind"], 1) * self.ledger.open_cents(i) for i in open_items
+        )
+        if abs(total - cash) > _tol(cash):
+            return []
+        return self._rows_from_docs([(i, 0, "INVOICE") for i in open_items], ctx, amounts_known=False)
+
     # ------------------------------------------------------------- plumbing
     def _expand(self, entries: list[dict], ctx: _Context) -> list[tuple[str, int, str]]:
         """An operation's document rows -> (item_id, cents, type), unresolved dropped."""
@@ -328,29 +384,41 @@ class Engine:
     def _share(self, unique: dict[str, tuple[int, str]], ctx: _Context) -> dict[str, tuple[int, str]]:
         """Split the cash over items the text named but gave no amounts for.
 
-        Full clearing first (that is what the overwhelming majority of 1:N receipts do);
-        only the residual, if any, lands on the oldest still-open item, which is the
-        documented tie-break (§5.6).
+        A credit note in the list does not *consume* cash, it *reduces* it: the customer
+        pays "invoices minus credit note", so the cash to distribute over the invoices is
+        `cash + sum(credit notes)` and the credit note itself is a full positive row
+        (POLICIES §2). Getting this backwards silently drops the credit note from every
+        netted payment, which is the whole `ar_1toN_credit_note` segment.
+
+        Full clearing first (what the overwhelming majority of 1:N receipts do); only the
+        residual, if any, lands on the oldest still-open item, the documented tie-break
+        (§5.6).
         """
-        cash = abs(ctx.cash)
         order = sorted(unique, key=lambda i: (self.ledger.item(i)["issue_ymd"], i))
         opens = {i: (self.ledger.open_cents(i) or self.ledger.item(i)["total_cents"]) for i in order}
-        total = sum(opens.values())
-        if total and abs(total - cash) <= _tol(cash):
-            return {i: (opens[i], unique[i][1]) for i in order}
-        out: dict[str, tuple[int, str]] = {}
-        left = cash
-        for item_id in order:
-            take = min(max(opens[item_id], 0), left) if len(order) > 1 else left
+        notes = [i for i in order if self.ledger.item(i)["kind"] == "credit_note"]
+        invoices = [i for i in order if i not in set(notes)]
+
+        target = abs(ctx.cash) + sum(max(opens[i], 0) for i in notes)
+        out: dict[str, tuple[int, str]] = {i: (max(opens[i], 0), unique[i][1]) for i in notes}
+
+        total = sum(max(opens[i], 0) for i in invoices)
+        if invoices and abs(total - target) <= _tol(target):
+            out.update({i: (opens[i], unique[i][1]) for i in invoices})
+            return out
+        if len(invoices) == 1:
+            # One named invoice simply receives the whole cash: decide() explains the gap.
+            out[invoices[0]] = (target, unique[invoices[0]][1])
+            return out
+        left = target
+        for item_id in invoices:
+            take = min(max(opens[item_id], 0), left)
             if take <= 0:
                 continue
             out[item_id] = (take, unique[item_id][1])
             left -= take
             if left <= 0:
                 break
-        # A single named item simply receives the whole cash: decide() explains the gap.
-        if len(order) == 1:
-            out[order[0]] = (cash, unique[order[0]][1])
         return out
 
     def _rows_from_advice(self, advice, ctx: _Context) -> list[Row]:
@@ -414,6 +482,18 @@ def _payer_from_text(text: str) -> str:
             tail = text.split(marker, 1)[1]
             return tail.split("|")[0][:60]
     return ""
+
+
+def _net(rows: list[Row], ledger: Ledger) -> int:
+    """Cash a set of rows claims to explain: invoices minus the credit notes netted
+    against them (POLICIES §2)."""
+    total = 0
+    for row in rows:
+        if not row.item_id:
+            continue
+        kind = ledger.item(row.item_id)["kind"]
+        total += -row.cents if kind == "credit_note" else row.cents
+    return total
 
 
 def _hit(text: str, needles: tuple[str, ...]) -> bool:
