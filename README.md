@@ -251,6 +251,32 @@ the average.
 
 ---
 
+## 4b. PDF facts (optional evidence)
+
+PDFs can only change a reconciliation decision through a clause the CSVs do not carry
+(instalments, retention, an advance to deduct, "this invoice replaces X"). `src/bankrec/pdf/`
+extracts exactly those, plus the fields needed to check them:
+
+```bash
+make pdf-facts PHASE=sample          # parse PDFs -> data/<phase>/pdf_facts.jsonl + report
+make process PHASE=sample NAME=pdf --PDF_FACTS=1   # use them as evidence in the engine
+bankrec pdf-facts --explain data/sample/pdfs/ES01/ARI_FV250110868.pdf
+```
+
+Measured on the two available phases (positions -> fields -> clauses, cached by file sha):
+
+| phase | docs | build | document no. | total | clauses found |
+|---|---|---|---|---|---|
+| sample | 2,298 | 2.4 s | 94.6% | 94.6% | instalments 231, replaces 200, retention 86, advance 12 |
+| live | 16,688 | 22 s | 96.1% | 94.5% | instalments 1,308, replaces 1,009, credit notes 698, retention 155 |
+
+Facts are **evidence, not decisions**: the engine reads them only when `--pdf-facts` is
+passed, and the only rule wired so far is the `replaces` redirect. That rule moved the
+sample score by 0.00 (73.60 -> 73.60) because the current engine already resolves most of
+those payments; the measured ceiling for the remaining PDF facts is +1.9 (credit-note
+direction), +0.9 (instalments/retention/advance/replaces as a group) and +0.3 (service
+month), and each needs its own engine rule and its own measurement.
+
 ## 5. The data (full detail in `docs/DATA_DICTIONARY.md`)
 
 `scripts/download_data.py` keeps the downloads and the extracted phases apart:

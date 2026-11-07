@@ -4,6 +4,9 @@ Context for anyone (human or agent) changing this code. The *what* is in
 [`README.md`](README.md) and [`docs/`](docs/); this file is the decision log, so you
 don't re-litigate choices that were already paid for.
 
+> **Picking up work in progress?** Read [`HANDOFF.md`](HANDOFF.md) first: current
+> numbers, the exact commands, where the code is, and the next measured increments.
+
 > One-line brief: explain **every** bank line of a synthetic multinational, submit a
 > CSV, be scored by a fixed formula. The code exists to make one thing cheap:
 > *turning evidence into a testable hypothesis*.
@@ -295,6 +298,20 @@ different.
 failed validation / content already pushed / FINAL is one shot. It never guesses the file.
 The warnings are printed *before* the typed confirmation, because the only moment they can
 change a decision is before the shot is spent.
+
+## 15c. Why PDF facts are evidence and not decisions
+
+The reconciliation is CSV + ledger state; a PDF can only add what no CSV column carries.
+So `src/bankrec/pdf/` produces facts (fields, clauses, checks, flags) and **nothing else**:
+`build.py` writes a sha-keyed cache, `stages.record` records the run, and the engine reads
+them only when `--pdf-facts` is passed. That is what makes a bad clause harmless: it is a
+flag on a fact, not a branch in the matcher, and it can be switched off without changing
+the build. It also keeps the honest measurement: wiring `replaces` moved the sample score
+by 0.00 (73.60 -> 73.60), which is a real result and not something a "smarter" parser story
+should hide. The two field bugs worth remembering are pinned in `tests/test_pdf_facts.py`:
+`Nº` folds to `no` (the ordinal indicator has a compatibility decomposition) and
+`1,752.08` must parse as 175208, not 1.75 — the second one moved LIVE total coverage from
+57% to 94.5%.
 
 ## 16. Why data and builds are gitignored, tokens are not committed
 
