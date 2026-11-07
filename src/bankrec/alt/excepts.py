@@ -79,6 +79,7 @@ class Exceptions:
         cash_cents: int,
         open_before: int,
         reason: str = "",
+        deduction: int = 0,
         forced: str = "",
     ) -> tuple[str, int]:
         """(exception, amount to submit in item currency) for one (line, item) row."""
@@ -89,6 +90,11 @@ class Exceptions:
             item.get("currency") and txn.get("currency") and item["currency"] != txn["currency"]
         )
         shortfall = open_before - cash_cents
+        if deduction > 0:
+            # The advice states the deduction outright; trust it over the subtraction,
+            # which also sees every balance the ledger has already moved.
+            shortfall = deduction
+            cash_cents = open_before - deduction
 
         if shortfall < 0 and not _close(cash_cents, open_before):
             # §3: the invoice clears in full, the excess stays on the account.
@@ -151,10 +157,14 @@ class Exceptions:
 
     @staticmethod
     def _is_dispute(reason: str) -> bool:
-        folded = reason.upper()
-        if _has(folded, DISCOUNT_WORDS):
-            return False
-        return _has(folded, DISPUTE_WORDS)
+        """Any stated reason is a dispute unless the advice calls it a discount.
+
+        POLICIES §3 defines SHORT_DISPUTE as "the customer deducted an amount **with a
+        stated reason**" — so the presence of the text is the rule, and enumerating the
+        reasons would only add ways to be wrong on LIVE. (It did: "PENAL. RETRASO" is a
+        late-delivery penalty that no keyword list written from the spec contains.)
+        """
+        return bool(reason.strip()) and not _has(reason.upper(), DISCOUNT_WORDS)
 
 
 def _has(text: str, needles: tuple[str, ...]) -> bool:

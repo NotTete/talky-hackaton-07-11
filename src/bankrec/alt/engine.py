@@ -34,7 +34,7 @@ from . import refs
 from .cats import Categories
 from .excepts import Exceptions
 from .ledger import Ledger
-from .ops import Operations, select as select_entries
+from .ops import DIRECTION, Operations, select as select_entries
 
 # The scorer accepts an amount within max(0.01, 0.5 %); matching uses a slightly wider
 # band so a bank spread or a rounded cent still *finds* the item (CLAUDE.md §8).
@@ -144,13 +144,19 @@ class Engine:
         op = self.ops.by_token(ctx.op_tokens)
         if op is None:
             return []
+        sign = 1 if ctx.cash > 0 else -1
+        if DIRECTION.get(op.kind, 0) and DIRECTION[op.kind] != sign:
+            return []  # a payment run never explains a receipt (and vice versa)
         entries = select_entries(op, abs(ctx.cash), ctx.want_count)
         if not entries:
             return []
         return self._rows_from_docs(self._expand(entries, ctx), ctx)
 
     def _operation_by_total(self, ctx: _Context) -> list[Row]:
-        op = self.ops.by_total(abs(ctx.cash), str(ctx.txn.get("account_id") or ""), ctx.ymd, _tol(ctx.cash))
+        op = self.ops.by_total(
+            abs(ctx.cash), str(ctx.txn.get("account_id") or ""), ctx.ymd, _tol(ctx.cash),
+            sign=1 if ctx.cash > 0 else -1,
+        )
         if op is None:
             return []
         return self._rows_from_docs(self._expand(op.entries, ctx), ctx)
@@ -302,9 +308,15 @@ class Engine:
                 # §2: a netted credit note is a full positive row with no exception.
                 rows.append(Row(item_id, open_before, ""))
                 continue
-            reason = ctx.reasons.get(alnum(item["document_number"]), "")
+            key = alnum(item["document_number"])
+            reason = ctx.reasons.get(key, "")
             exception, amount = self.excepts.decide(
-                ctx.txn, item, cash_cents=cash, open_before=open_before, reason=reason
+                ctx.txn,
+                item,
+                cash_cents=cash,
+                open_before=open_before,
+                reason=reason,
+                deduction=ctx.deductions.get(key, 0),
             )
             # Invariant: a submitted amount is a positive integer number of cents in the
             # item currency (schema.validate_row). An over-applied ledger balance can
@@ -349,8 +361,11 @@ class Engine:
             if not item_id:
                 continue
             docs.append((item_id, line.paid_cents or line.gross_cents, "INVOICE"))
+            key = alnum(self.ledger.item(item_id)["document_number"])
             if line.reason:
-                ctx.reasons[alnum(self.ledger.item(item_id)["document_number"])] = line.reason
+                ctx.reasons[key] = line.reason
+            if line.deduction_cents:
+                ctx.deductions[key] = line.deduction_cents
         return self._rows_from_docs(docs, ctx)
 
 
@@ -358,7 +373,7 @@ class _Context:
     """Everything derived from one bank line, computed once."""
 
     __slots__ = ("txn", "text", "tokens", "op_tokens", "cash", "ymd", "party", "side",
-                 "reasons", "want_count")
+                 "reasons", "deductions", "want_count")
 
     def __init__(self, txn: dict, engine: Engine):
         self.txn = txn
@@ -376,6 +391,7 @@ class _Context:
         self.ymd = _ymd(txn.get("booking_date"))
         self.side = "AR" if self.cash > 0 else "AP"
         self.reasons: dict[str, str] = {}
+        self.deductions: dict[str, int] = {}
         # "REMESA CF0100... 3 PROVEEDORES" / "... 125 RECIBOS": the statement says how
         # many underlying operations this debit covers. It is the cheapest possible
         # disambiguator for a subset-sum (ops.select).

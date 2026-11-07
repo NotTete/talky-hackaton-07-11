@@ -30,6 +30,17 @@ def _ymd(value: str) -> int:
     return int(d) if d.isdigit() else 0
 
 
+# Which sign of cash an operation can explain. A payment run is money going *out*; a
+# collection batch, a card settlement and a cheque deposit are money coming *in*. Without
+# this, an AP run whose total happens to sit within 1 % of an AR receipt gets expanded
+# onto a customer payment -- same account, same week, completely wrong side of the book.
+DIRECTION = {
+    "run": -1, "transfer": -1,
+    "dd_batch": +1, "card": +1, "cheque": +1,
+    "dd_entry": 0, "cheque_entry": 0,   # a return reverses either direction
+}
+
+
 @dataclass(slots=True)
 class Operation:
     kind: str                       # dd_batch | dd_entry | card | cheque | run | transfer
@@ -192,7 +203,7 @@ class Operations:
                 best, best_len = op, len(token)
         return best
 
-    def by_total(self, cents: int, account_id: str, ymd: int, tol: int) -> Operation | None:
+    def by_total(self, cents: int, account_id: str, ymd: int, tol: int, sign: int = 0) -> Operation | None:
         """Fallback for statements that print no operation id at all."""
         lo = bisect.bisect_left(self._totals, cents - tol)
         hi = bisect.bisect_right(self._totals, cents + tol)
@@ -200,6 +211,8 @@ class Operations:
         for total in self._totals[lo:hi]:
             for op in self._by_total[total]:
                 if op.kind in {"dd_entry", "cheque_entry"}:
+                    continue
+                if sign and DIRECTION.get(op.kind, 0) and DIRECTION[op.kind] != sign:
                     continue
                 if op.account_id and account_id and op.account_id != account_id:
                     continue
