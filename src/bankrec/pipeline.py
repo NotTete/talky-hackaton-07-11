@@ -91,6 +91,7 @@ def process(
 
     stats = Stats(by_reason={})
     hooks = list(hooks or [])
+    matcher.probing = bool(hooks)
     total = len(txns)
     tick = max(total // 20, 1) if total > 25_000 else 0
     started_loop = time.time()
@@ -115,6 +116,7 @@ def process(
                     items=[row.item_id for row in allocations],
                     amounts=[row.cents for row in allocations],
                     exceptions=[row.exception for row in allocations],
+                    probe=getattr(matcher, "probe", None),
                 )
                 for hook in hooks:
                     hook.on_line(decision)

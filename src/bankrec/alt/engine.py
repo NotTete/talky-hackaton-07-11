@@ -105,6 +105,10 @@ class Engine:
         self.cats = Categories(masters)
         self.excepts = Exceptions(masters, self.fx)
         self.stats: dict[str, int] = {}
+        # Diagnosis (see hooks.py): off unless a decision hook asks for it.
+        self.probing = False
+        self.probe: dict | None = None
+        self._probe: dict | None = None
 
     # ------------------------------------------------------------------ api
     # Document-backed resolvers. The document *is* the answer, so the first one that
@@ -118,7 +122,41 @@ class Engine:
     INFERENCE_STEPS = ("reference", "advice_total", "party_sweep", "party_amount")
 
     def resolve(self, txn: dict) -> list[Row]:
+        # The probe is observation only: it records what each step returned and how the
+        # line was finally settled, and it never feeds back into a decision (CLAUDE.md §7).
+        self._probe = {} if self.probing else None
+        rows = self._resolve(txn)
+        self.probe = self._probe
+        return rows
+
+    def _probe_token(self, token: str) -> list:
+        """How one document reference in the bank text fares against the open items."""
+        hit = self.ledger.by_doc(token)
+        if hit:
+            # [token, state, items sharing this number, of which open]: more than one
+            # means the number is ambiguous and _narrow may have declined to pick.
+            open_hit = [i for i in hit if self.ledger.open_cents(i) > 0]
+            return [token, "open" if open_hit else "settled", len(hit), len(open_hit)]
+        if self.ledger.by_doc_prefix(token) or self.ledger.by_doc_suffix(token):
+            return [token, "partial"]
+        return [token, "absent"]
+
+    def _resolve(self, txn: dict) -> list[Row]:
         ctx = _Context(txn, self)
+        if self._probe is not None:
+            self._probe["tok"] = [self._probe_token(t) for t in ctx.tokens[:8]]
+            self._probe["steps"] = []
+            self._probe["cash"] = ctx.cash
+            self._probe["parties"] = len(ctx.parties)
+            # The shortlisted payers and how much they have open on this line's side:
+            # "we never even looked at the right ledger" and "we looked and could not
+            # pick" are different bugs with different fixes.
+            self._probe["pid"] = list(ctx.parties[:4])
+            self._probe["open"] = sum(
+                1
+                for i in ctx.scope(self.ledger)
+                if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == ctx.side
+            )
         steps = {
             "returned": self._returned,
             "operation_id": self._operation_by_id,
@@ -132,6 +170,8 @@ class Engine:
         }
         for name in self.DOCUMENT_STEPS:
             rows = steps[name](ctx)
+            if self._probe is not None:
+                self._probe["steps"].append([name, len(rows)])
             if rows:
                 return self._accept(name, rows)
 
@@ -140,8 +180,12 @@ class Engine:
         for name in self.INFERENCE_STEPS:
             rows = steps[name](ctx)
             if not rows:
+                if self._probe is not None:
+                    self._probe["steps"].append([name, 0])
                 continue
             gap = abs(_net(rows, self.ledger) - abs(ctx.cash))
+            if self._probe is not None:
+                self._probe["steps"].append([name, len(rows), gap])
             if gap <= tol:
                 return self._accept(name, rows)
             if best is None or gap < best[0]:
@@ -154,6 +198,8 @@ class Engine:
             return self._accept("supplier_refund", rows)
 
         category = self.cats.of(txn)
+        if self._probe is not None:
+            self._probe.setdefault("end", "category")
         self.stats[f"category:{category}"] = self.stats.get(f"category:{category}", 0) + 1
         # §3's UNIDENTIFIED is "a receipt for which no open item exists" -- an unknown
         # payer. A receipt from a customer we *do* know, whose items we merely failed to
@@ -164,6 +210,8 @@ class Engine:
 
     def _accept(self, name: str, rows: list[Row]) -> list[Row]:
         self.stats[name] = self.stats.get(name, 0) + 1
+        if self._probe is not None:
+            self._probe.setdefault("end", name)
         self._commit(rows)
         return rows
 

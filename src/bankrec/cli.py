@@ -276,6 +276,15 @@ def cmd_pdf_facts(args) -> int:
 # ------------------------------------------------------------------- builds
 
 
+def cmd_miss_report(args) -> int:
+    from .misses import missed_settlements, render
+
+    settings = _settings(args)
+    build = _resolve(Builds(settings.builds_dir), args.build, args.phase)
+    print(render(missed_settlements(build, settings, examples=max(args.examples, 0)), examples=max(args.examples, 0)))
+    return 0
+
+
 def cmd_builds(args) -> int:
     settings = _settings(args)
     builds = Builds(settings.builds_dir)
@@ -490,6 +499,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--examples", type=int, default=3, help="example lines per failure kind with --explain")
     _common(p)
     p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("miss-report", help="why each missed settlement was missed (needs a --trace build)")
+    p.add_argument("build", nargs="?", help="build id or file (default: latest for the phase)")
+    p.add_argument("--examples", type=int, default=3, help="example lines per cause")
+    _common(p)
+    p.set_defaults(func=cmd_miss_report)
 
     p = sub.add_parser("push", aliases=["submit"], help="upload a build to LIVE/FINAL")
     p.add_argument("phase", choices=["LIVE", "FINAL", "live", "final"])

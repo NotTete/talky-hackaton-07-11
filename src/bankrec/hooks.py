@@ -40,6 +40,9 @@ class LineDecision:
     items: list[str]
     amounts: list[int]
     exceptions: list[str]
+    # Why the line resolved the way it did: reference states, every step tried and its
+    # outcome, and the step that finally settled it. Empty unless the engine was probing.
+    probe: dict | None = None
 
 
 @runtime_checkable
@@ -75,6 +78,7 @@ class TraceRecorder:
                     "i": decision.items,
                     "a": decision.amounts,
                     "x": decision.exceptions,
+                    **({"p": decision.probe} if decision.probe else {}),
                 },
                 separators=(",", ":"),
                 ensure_ascii=False,
@@ -99,6 +103,22 @@ def trace_path(build) -> Path:
         return Path(declared)
     stem = Path(build.path).name.split(".")[0]
     return Path(build.path).with_name(f"{stem}.trace.jsonl.gz")
+
+
+def load_probes(build) -> dict[str, dict]:
+    """bank_txn_id -> probe, for builds traced with the engine probing. Empty otherwise."""
+    path = trace_path(build)
+    if not path.exists():
+        return {}
+    out: dict[str, dict] = {}
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                row = json.loads(line)
+                if "p" in row:
+                    out[row["t"]] = row["p"]
+    return out
 
 
 def load_trace(build) -> dict[str, tuple[str, int]]:

@@ -340,8 +340,8 @@ class Phase:
                     pl.lit("").alias("payment_terms"),
                     pl.lit("").alias("related_document"),
                     pl.lit("").alias("reason"),
-                    pl.lit(0).alias("net_cents"),
-                    pl.lit(0).alias("tax_cents"),
+                    pl.lit(0, dtype=pl.Int64).alias("net_cents"),
+                    pl.lit(0, dtype=pl.Int64).alias("tax_cents"),
                     pl.lit("").alias("po_reference"),
                     pl.lit("").alias("payment_method"),
                 )
