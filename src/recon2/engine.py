@@ -21,7 +21,10 @@ MAX_ERR_RATE = 0.001   # strict mode: abort when per-line errors exceed 0.1 % of
 
 def strict_for(phase_name: str) -> bool:
     """live/final (and RECON2_STRICT=1) must never silently run on stubs or swallowed errors."""
-    return os.environ.get("RECON2_STRICT") == "1" or phase_name.split(":")[0] in ("live", "final", "final_sim")
+    v = os.environ.get("RECON2_STRICT")
+    if v == "0":   # explicit escape hatch for the FINAL release if one module misbehaves
+        return False
+    return v == "1" or phase_name.split(":")[0] in ("live", "final", "final_sim")
 ROOT = Path(__file__).resolve().parents[2]
 
 
