@@ -54,6 +54,9 @@ FX_TOL_PCT = 0.03
 TRANSFER_METHODS = {"", "transfer"}
 
 # Text that says the money came back. Every scheme has its own word for it.
+# Words that say the cash pays something that is not yet an invoice (POLICIES §4).
+ADVANCE_WORDS = ("PROFORMA", "ACOMPTE", "ANZAHLUNG", "ADVANCE PAYMENT", "ANTICIPO")
+
 RETURN_WORDS = (
     "DEVOL", "DEVUELT", "IMPAYE", "IMPAYÉ", "RETOUR", "RUECKLASTSCHRIFT", "RUCKLASTSCHRIFT",
     "RETURNED", "RETURN", "CHARGEBACK", "CONTRACARGO", "REJECT", "RECHAZ", "UNPAID",
@@ -175,6 +178,14 @@ class Engine:
             if rows:
                 return self._accept(name, rows)
 
+        # "A proforma is not an invoice; when a customer pays a proforma the invoice does
+        # not exist yet" (POLICIES §4). The document steps above may still answer -- an
+        # advice that lists real documents outranks the word -- but no *inference* step
+        # may hand the cash to the customer's other open invoices just because the sum
+        # happens to fit. Every sample line that names one settles nothing.
+        if ctx.is_advance:
+            return self._category_row(txn, ctx)
+
         tol = _tol(ctx.cash)
         best: tuple[int, str, list[Row]] | None = None
         for name in self.INFERENCE_STEPS:
@@ -197,6 +208,10 @@ class Engine:
         if rows:
             return self._accept("supplier_refund", rows)
 
+        return self._category_row(txn, ctx)
+
+    def _category_row(self, txn: dict, ctx: _Context) -> list[Row]:
+        """The line settles no item: one row carrying its category (invariant 1)."""
         category = self.cats.of(txn)
         if self._probe is not None:
             self._probe.setdefault("end", "category")
@@ -860,7 +875,7 @@ class _Context:
 
     __slots__ = ("txn", "text", "tokens", "op_tokens", "cash", "ymd", "party", "side",
                  "reasons", "deductions", "want_count", "parties", "_scope", "is_return",
-                 "currency", "full_clear")
+                 "currency", "full_clear", "is_advance")
 
     def __init__(self, txn: dict, engine: Engine):
         self.txn = txn
@@ -909,6 +924,11 @@ class _Context:
             and (self.cash < 0 or _hit(self.text, ("TRANSFERENCIA DEVUELTA", "RETURNED TRANSFER")))
         )
 
+        # The customer is paying a proforma / an advance, so the invoice does not exist
+        # yet (POLICIES §4). Kept as a flag rather than a category test because the
+        # *category* of such a line still depends on the rest of the text.
+        self.is_advance = _hit(self.text, ADVANCE_WORDS)
+
         self._scope: list[str] | None = None
         owner = engine.ledger.party_for_iban(txn.get("counterparty_account") or "")
         if owner:
@@ -921,15 +941,29 @@ class _Context:
             # of ranking the formats, and let the amount decide.
             self.parties = []
             seen_party: set[str] = set()
-            for candidate in (txn.get("counterparty_name") or "", *_payer_candidates(self.text), self.text):
+            readings = [txn.get("counterparty_name") or "", *_payer_candidates(self.text)]
+            # A name the masters carry verbatim -- or verbatim up to the column the bank
+            # cut it at -- is an identification, not a guess, so every reading is tried
+            # for a prefix before any of them is allowed to vote on tokens. Token voting
+            # on "SPA SOL S.A." scores four Brazilian customers 1.0, because `name_tokens`
+            # drops SPA as a legal form and every "...SOL..." covers the one token left.
+            for candidate in readings:
                 if not candidate:
                     continue
-                for party_id in engine.ledger.parties_for_name(candidate):
+                for party_id in engine.ledger.parties_by_name_prefix(candidate):
                     if party_id not in seen_party:
                         seen_party.add(party_id)
                         self.parties.append(party_id)
-                if self.parties:
-                    break
+            if not self.parties:
+                for candidate in (*readings, self.text):
+                    if not candidate:
+                        continue
+                    for party_id in engine.ledger.parties_for_name(candidate):
+                        if party_id not in seen_party:
+                            seen_party.add(party_id)
+                            self.parties.append(party_id)
+                    if self.parties:
+                        break
         self.party = self.parties[0] if self.parties else ""
 
     def cross(self, engine, item_ids) -> bool:

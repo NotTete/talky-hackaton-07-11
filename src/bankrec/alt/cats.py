@@ -54,7 +54,10 @@ KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
                          "CREDIT INTEREST", "ABONO INTERESES")),
     ("INTEREST_EXPENSE", ("INTERESES DEUDORES", "ZINSEN", "INTERETS", "DEBIT INTEREST",
                           "INTERESES")),
-    ("CUSTOMER_ADVANCE", ("ANTICIPO", "PROFORMA", "ACOMPTE", "ANZAHLUNG", "ADVANCE PAYMENT")),
+    # "ANTICIPO" alone is *not* here on purpose: a cash deposit or an instant transfer
+    # whose whole concept is "ANTICIPO" is an unexplained receipt (golden: UNIDENTIFIED).
+    # What makes it a CUSTOMER_ADVANCE is the proforma the customer is paying (§4).
+    ("CUSTOMER_ADVANCE", ("PROFORMA", "ACOMPTE", "ANZAHLUNG", "ADVANCE PAYMENT")),
     ("CUSTOMER_REFUND", ("DEVOLUCION CLIENTE", "REEMBOLSO CLIENTE", "CUSTOMER REFUND",
                          "DEVOLUCION DUPLICADO", "REINTEGRO CLIENTE")),
     ("SUPPLIER_REFUND", ("DEVOLUCION PROVEEDOR", "SUPPLIER REFUND", "LIEFERANTENGUTSCHRIFT",

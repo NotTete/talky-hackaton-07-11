@@ -31,6 +31,10 @@ MIN_PREFIX = 7
 MIN_SUFFIX = 6
 # Above this many candidates a prefix/party query stops being evidence (CLAUDE.md §11b).
 MAX_FANOUT = 400
+# A name prefix shorter than this is a word, not an identification ("SOL", "AGUAS").
+MIN_NAME_PREFIX = 8
+# A truncated name that still matches this many different parties has not named anyone.
+MAX_NAME_HITS = 8
 
 
 def _ymd(value: str) -> int:
@@ -87,10 +91,21 @@ class Ledger:
             ids.sort(key=lambda i: (self.items[i]["issue_ymd"], i))
 
         self._party_tokens: dict[str, list[str]] = defaultdict(list)
+        # The same bisect trick as the document numbers, for names: a statement prints
+        # "TRANSFERENCIAS ALONSO HIDROTECNIA S.A" -- our own name, cut at the column
+        # width. That is not a fuzzy match, it is a prefix, and treating it as one is the
+        # difference between identifying the payer and shortlisting four strangers that
+        # happen to share a token.
+        by_name: dict[str, list[str]] = defaultdict(list)
         for party_id, name in masters.party_names.items():
             for token in sorted(name_tokens(name)):
                 if len(token) >= 4:
                     self._party_tokens[token].append(party_id)
+            key = alnum(name)
+            if len(key) >= MIN_NAME_PREFIX:
+                by_name[key].append(party_id)
+        self._by_name = dict(by_name)
+        self._name_keys = sorted(self._by_name)
 
     # ------------------------------------------------------------- identity
     def by_doc(self, token: str) -> list[str]:
@@ -177,6 +192,28 @@ class Ledger:
                 scored.append((-similarity, -hits, party_id))
         scored.sort()
         return [party_id for _, _, party_id in scored[:limit]]
+
+    def parties_by_name_prefix(self, text: str, limit: int = 6) -> list[str]:
+        """Parties whose own name *starts with* this (truncated) bank text, closest first.
+
+        Exact first, then the shortest completion: "INSTALACIONES SIERRAMA" names
+        "Instalaciones Sierramayor S.A." ahead of a longer sibling, and when several
+        siblings remain the caller gets all of them and the amount decides.
+        """
+        key = alnum(text)
+        if len(key) < MIN_NAME_PREFIX:
+            return []
+        lo = bisect.bisect_left(self._name_keys, key)
+        hits: list[tuple[int, str]] = []
+        for candidate in self._name_keys[lo : lo + 64]:
+            if not candidate.startswith(key):
+                break
+            for party_id in self._by_name[candidate]:
+                hits.append((len(candidate) - len(key), party_id))
+            if len(hits) > MAX_NAME_HITS:
+                return []
+        hits.sort()
+        return [party_id for _, party_id in hits[:limit]]
 
     def party_for_name(self, text: str) -> str:
         """Best party id for a (possibly truncated) counterparty name, or ''."""

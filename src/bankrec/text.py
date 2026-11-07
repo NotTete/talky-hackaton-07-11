@@ -53,7 +53,16 @@ def name_tokens(value: str) -> set[str]:
 
 
 def name_similarity(a: set[str], b: set[str]) -> float:
-    """Coverage of the *smaller* name: bank texts truncate, so recall beats Jaccard."""
+    """Coverage of the *smaller* name: bank texts truncate, so recall beats Jaccard.
+
+    Known weakness, deliberately kept: a one-token master name ("Spa Alonso SARL") covers
+    any text containing that token perfectly, so it ties with -- or beats -- the customer
+    the statement actually named. Dividing by `len(a)` instead fixes that case and costs
+    far more, because the last-resort reading is the *whole* bank text, where coverage of
+    `a` is near zero by construction (sample 75.25 -> 71.1). The fix is to identify the
+    payer by name prefix before any token vote (`Ledger.parties_by_name_prefix`), not to
+    re-weight the vote.
+    """
     if not a or not b:
         return 0.0
     return len(a & b) / min(len(a), len(b))
