@@ -1,5 +1,5 @@
 {
-  "score": 74.31,
+  "score": 74.33,
   "segments": {
     "ap_confirming": 0.328358,
     "ap_credit_note_netted": 0.814433,
@@ -15,9 +15,9 @@
     "ap_supplier_refund": 0.850575,
     "ar_1to1": 0.99137,
     "ar_1to1_remittance": 1.0,
-    "ar_1toN_credit_note": 0.371859,
+    "ar_1toN_credit_note": 0.386935,
     "ar_1toN_remittance": 0.837209,
-    "ar_1toN_text": 0.644699,
+    "ar_1toN_text": 0.647564,
     "ar_advance_deduction": 0.333333,
     "ar_card_chargeback": 0.0,
     "ar_card_settlement": 0.97619,

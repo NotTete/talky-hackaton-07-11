@@ -25,6 +25,7 @@ order, so "the item is already settled" (DUPLICATE_PAYMENT) and "the item is ope
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 from ..data import FX, Masters, Phase
@@ -301,7 +302,48 @@ class Engine:
                 found.append((item_id, 0, "INVOICE"))
         if not found:
             return []
+        found += self._unnamed_credit_notes([i for i, _, _ in found], ctx)
         return self._rows_from_docs(found, ctx, amounts_known=False)
+
+    def _unnamed_credit_notes(self, item_ids: list[str], ctx: _Context) -> list[tuple[str, int, str]]:
+        """The customer pays "invoices minus credit notes" but names only the invoices.
+
+        When the named invoices overshoot the cash by exactly the open credit notes of
+        their party (one to three of them, found uniquely), the notes were netted (POLICIES
+        §2). The overshoot has to match to the cent tolerance: with no match nothing is added.
+        """
+        if len(item_ids) < 2:
+            return []  # one invoice + one note is too easy to hit by coincidence
+        items = [self.ledger.item(i) for i in item_ids]
+        if any(item["kind"] == "credit_note" or item["side"] != ctx.side for item in items):
+            return []
+        parties = {item.get("party_id") for item in items}
+        if len(parties) != 1:
+            return []
+        opens = self._opens(item_ids, ctx)
+        gap = sum(opens.values()) - abs(ctx.cash)
+        if gap <= _tol(abs(ctx.cash)):
+            return []
+        notes = [
+            i
+            for i in self.ledger.party_items(next(iter(parties)))
+            if self.ledger.item(i)["kind"] == "credit_note"
+            and self.ledger.item(i)["side"] == ctx.side
+            and self.ledger.open_cents(i) > 0
+        ][:8]
+        if not notes:
+            return []
+        note_open = self._opens(notes, ctx)
+        tol = _tol(abs(ctx.cash))
+        hits = [
+            combo
+            for size in (1, 2, 3)
+            for combo in itertools.combinations(notes, size)
+            if abs(sum(note_open[i] for i in combo) - gap) <= tol
+        ]
+        if len(hits) != 1:
+            return []
+        return [(i, 0, "INVOICE") for i in hits[0]]
 
     # -------------------------------------------------------------- step 6
     # A payment can be short by a documented percentage and still clear the invoice in

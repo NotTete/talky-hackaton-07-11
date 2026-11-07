@@ -32,7 +32,45 @@ FIXTURES = ROOT / "tests" / "fixtures"
 SEGMENT_TOLERANCE = 0.002  # accuracy points a segment may lose before the ratchet fails
 
 
-def run() -> dict:
+CACHE = ROOT / ".cache" / "ratchet.json"
+
+
+def _inputs_key() -> str:
+    """Everything a sample build depends on: the code, the settings, the sample data.
+
+    A build is a pure function of these (CLAUDE.md §12), so when the key is unchanged the
+    last measurement is still true and the 60 s build can be skipped.
+    """
+    digest = hashlib.sha256()
+    files = sorted((ROOT / "src").rglob("*.py")) + [ROOT / "config" / "settings.toml"]
+    files += sorted(p for p in (ROOT / "data" / "sample").rglob("*") if p.is_file())
+    files += sorted((ROOT / "data" / "masters").rglob("*")) if (ROOT / "data" / "masters").exists() else []
+    for path in files:
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        if path.suffix == ".py" or path.name == "settings.toml":
+            digest.update(path.read_bytes())  # content, not mtime: edits and reverts are exact
+        else:
+            digest.update(f"{path}:{stat.st_size}:{int(stat.st_mtime)}".encode())
+    return digest.hexdigest()
+
+
+def run(use_cache: bool = True) -> dict:
+    """Measure the sample build, reusing the last result when no input changed."""
+    key = _inputs_key()
+    if use_cache and CACHE.exists():
+        cached = json.loads(CACHE.read_text())
+        if cached.get("key") == key:
+            print("ratchet: inputs unchanged, using the cached measurement (--fresh to rebuild)")
+            return cached["result"]
+    result = _measure()
+    CACHE.parent.mkdir(exist_ok=True)
+    CACHE.write_text(json.dumps({"key": key, "result": result}))
+    return result
+
+
+def _measure() -> dict:
     """Build the sample with default settings in a scratch repository and measure it."""
     settings = load_settings()
     settings.phase = "sample"
@@ -66,8 +104,9 @@ def problems(now: dict, floor: dict, sha: str) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--update", action="store_true")
+    parser.add_argument("--fresh", action="store_true", help="ignore the cache and rebuild")
     args = parser.parse_args()
-    now = run()
+    now = run(use_cache=not (args.fresh or args.update))
     FIXTURES.mkdir(exist_ok=True)
     if args.update:
         (FIXTURES / "sample.sha256").write_text(now["sha256"] + "\n")
