@@ -15,6 +15,7 @@ from recon2.model import Hyp, Item, Line
 TOL_PCT = 0.005
 AP_HOLDING_SCOPE = {"ES00", "ES01", "ES02", "PT01"}
 WHT_BP = (125, 150, 1000)
+WHT_RATES = {"BR01": (150, 1000), "MA01": (150, 1000), "MX01": (125, 1000)}
 FANOUT = 250
 SUB_CANDS, SUB_PICKS, SUB_STATES = 40, 12, 200_000
 BITSET_MAX = 20_000_000  # cents; above this the bounded dict DP is used
@@ -340,7 +341,7 @@ class Resolver:
         return None
 
     # ------------------------------------------------------------------ party + amount (T4/T5)
-    def by_party_amount(self, line: Line, pset, trace: dict, reopened: set[int] = frozenset()) -> list[Hyp]:
+    def by_party_amount(self, line: Line, pset, trace: dict, reopened: set[int] = frozenset(), child: frozenset = frozenset()) -> list[Hyp]:
         """pset: party ids in precedence order (list) or a set."""
         plist = list(dict.fromkeys(pset if isinstance(pset, list) else sorted(pset)))
         if not plist:
@@ -358,8 +359,9 @@ class Resolver:
             return []
         for i in cands[:10]:
             trace.setdefault("cands", []).append([it[i].item_id, "party", "open"])
+        dcands = [i for i in cands if it[i].party_id not in child]   # children: subsets only, never amount/fifo/short
         # exact / tolerant single item (cheap over the whole set: no fanout cap needed)
-        exact = [i for i in cands if self.fits_sum(line, it[i].ccy, it[i].open)]
+        exact = [i for i in dcands if self.fits_sum(line, it[i].ccy, it[i].open)]
         if exact:
             best = max(self.fits_sum(line, it[i].ccy, it[i].open) for i in exact)
             exact = [i for i in exact if self.fits_sum(line, it[i].ccy, it[i].open) == best]
@@ -376,10 +378,10 @@ class Resolver:
             pick = self._month_pick(line, exact) or self._oldest(exact)
             return [Hyp("party.fifo", 5, [pick], note="fifo")]
         # single-item short shapes (discount / withholding / bank charges)
-        shp = [i for i in cands if self._short_shape(line, it[i])]
+        shp = [i for i in dcands if self._short_shape(line, it[i])]
         if not shp:
             # first payment of a retention (0.95/0.90) or an instalment plan piece (total/n)
-            shp = [i for i in cands if self._piece_shape(line, it[i])]
+            shp = [i for i in dcands if self._piece_shape(line, it[i])]
         if len(shp) == 1:
             return [Hyp("party.short", 4, shp, note="short")]
         if len(shp) > 1:
@@ -412,6 +414,9 @@ class Resolver:
                         return [Hyp("party.prefix", 5, cs[:k + 1], note="prefix")]
                     if acc > cash:
                         break
+                sw = self._sweep(line, p, cs, cash, ccy, cn_k)
+                if sw is not None:
+                    return [sw]
                 cs = cs[:SUB_CANDS]
                 pick = _subset_exact([it[i].open for i in cs], cash, SUB_PICKS, self)
                 if pick is not None and len(pick) >= 2:
@@ -424,8 +429,78 @@ class Resolver:
                             pick = _subset_exact([it[i].open for i in cs], cash + cn_sum, 6, self)
                             if pick is not None:
                                 return [Hyp("party.subset_cn", 5, [cs[x] for x in pick], [cns[x] for x in combo], note="subset_cn")]
+        # withholding subset: one party, Σ(total - round(total*r)) == cash, gross rows
+        for p in plist:
+            wi = [i for i in per[p] if it[i].kind == "ARI" and it[i].open == it[i].total and it[i].ccy == line.ccy
+                  and it[i].entity in WHT_RATES]
+            if len(wi) < 2:
+                continue
+            wi = sorted(wi, key=lambda i: (it[i].due, it[i].issue, it[i].item_id))[:SUB_CANDS]
+            cash = abs(line.cash)
+            for r in WHT_RATES[it[wi[0]].entity]:
+                net = [it[i].total - (it[i].total * r + 5000) // 10000 for i in wi]
+                pick = _subset_exact(net, cash, 10, self)
+                if pick is not None and len(pick) >= 2:
+                    return [Hyp("party.wht", 5, [wi[k] for k in pick], note="wht")]
+        # single-item overpayment shape (surplus = round units or 1% / 10%); last resort
+        ov = []
+        for i in cands:
+            x = it[i]
+            c = self.cash_in(line, x.ccy)
+            if x.kind == "ARI" and c and c[0] == c[1] and x.ccy == line.ccy and c[0] > x.open > 0 and x.open == x.total:
+                sur = c[0] - x.open
+                if any(abs(sur - u * 100) <= 1 for u in (1, 2, 5, 10, 50, 100)) or any(
+                        abs(sur - x.open * p // 100) <= 1 or abs(sur - (x.open * p + 50) // 100) <= 1 for p in (1, 10)):
+                    ov.append(i)
+        if len(ov) == 1:
+            return [Hyp("party.over", 4, ov, note="over")]
         trace["party"] = "AMOUNT_NO_FIT"
         return []
+
+    def _sweep(self, line: Line, p: str, cs: list[int], cash: int, ccy: str, cn_k) -> Hyp | None:
+        """Oldest-due prefix of the party's open invoices, netted with <=3 open credit notes,
+        exact (zero gap) or with <=4 gaps inside the first k+4 invoices. Unique solution only."""
+        it = self.items
+        cns = [j for j in self.book.open_of_party(p, cn_k) if it[j].ccy == ccy and self.eligible(line, j)][:8]
+        combos = [()]
+        for k in range(1, min(3, len(cns)) + 1):
+            combos += list(_combos(len(cns), k))
+        pre = [0]
+        for i in cs:
+            pre.append(pre[-1] + it[i].open)
+        sols = []
+        for combo in combos:
+            cn_sum = sum(it[cns[x]].open for x in combo)
+            if not combo and True:
+                continue                      # plain prefix handled by the caller
+            tgt = cash + cn_sum
+            for k in range(2, len(cs) + 1):
+                if pre[k] == tgt:
+                    sols.append((0, combo, cs[:k]))
+                    break
+                if pre[k] > tgt:
+                    break
+        if len(sols) == 1:
+            _, combo, pick = sols[0]
+            return Hyp("party.sweep_cn", 5, list(pick), [cns[x] for x in combo], note="sweep_cn")
+        if sols:
+            return None
+        gap = []
+        for combo in combos:
+            cn_sum = sum(it[cns[x]].open for x in combo)
+            tgt = cash + cn_sum
+            k = next((k for k in range(1, len(cs) + 1) if pre[k] >= tgt), None)
+            if k is None or k < 3:
+                continue
+            w = cs[:min(len(cs), k + 4, SUB_CANDS)]
+            pick = _subset_exact([it[i].open for i in w], tgt, len(w), self)
+            if pick is not None and len(pick) >= 3 and (len(w) - len(pick)) <= 4 and any(x >= k - 2 for x in pick):
+                gap.append((combo, [w[x] for x in pick]))
+        if len(gap) == 1:
+            combo, pick = gap[0]
+            if combo or True:
+                return Hyp("party.sweep_gap", 5, pick, [cns[x] for x in combo], note="sweep_gap")
+        return None
 
     def _piece_shape(self, line: Line, it: Item) -> bool:
         if it.kind != "ARI" or it.open != it.total:

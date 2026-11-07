@@ -378,7 +378,7 @@ class Engine:
         if not hyps:
             hyps += self._call("refs", self.res.by_ref, line, pset, tr) or []
         if not hyps or all(R.fit_level(self.res, line, h) < 2 for h in hyps):
-            hyps += self._call("party", self.res.by_party_amount, line, [p for p, _ in pairs], tr) or []
+            hyps += self._call("party", self.res.by_party_amount, line, [p for p, _ in pairs], tr, frozenset(), frozenset(p for p, s in pairs if s.startswith("child:"))) or []
         if not hyps and pset:
             h = self._call("refund_cn", self.res.refund_cn, line, pset)
             if h:
@@ -414,7 +414,8 @@ class Engine:
         if not cat:
             cat = "UNIDENTIFIED" if line.cash > 0 else "BANK_FEES"
         d.category = cat
-        d.exc = "UNIDENTIFIED" if cat == "UNIDENTIFIED" else ""
+        strong = any(src in ("iban", "id8", "alias") for _, src in pairs)
+        d.exc = "UNIDENTIFIED" if cat == "UNIDENTIFIED" and not (strong and tr.get("cands")) else ""
         tr.update(route="category", reason=reason if line.cash > 0 else "ROUTER")
         return d
 

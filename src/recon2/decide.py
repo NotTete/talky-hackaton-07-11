@@ -249,6 +249,13 @@ def _retention_first(book, it: Item, a: int) -> bool:
     return False
 
 
+def _over_shape(sur: int, ob: int) -> bool:
+    """OVERPAYMENT surplus is a round number of units or 1% / 10% of the open amount."""
+    if any(abs(sur - u * 100) <= 1 for u in (1, 2, 5, 10, 50, 100)):
+        return True
+    return any(abs(sur - ob * p // 100) <= 1 or abs(sur - (ob * p + 50) // 100) <= 1 for p in (1, 10))
+
+
 def decide(line: Line, hyp: Hyp, book, ctx: Ctx, applied: dict[int, int]) -> list[Alloc]:
     if hyp.items:
         inv, cns = list(hyp.items), list(hyp.cn)
@@ -330,7 +337,7 @@ def decide(line: Line, hyp: Hyp, book, ctx: Ctx, applied: dict[int, int]) -> lis
         if cleared:                                                      # E5
             if cross:
                 out.append(Alloc(i, ob, "FX_DIFFERENCE", "E5"))
-            elif it.kind == "ARI" and single and a > ob and _first(book, it):
+            elif it.kind == "ARI" and single and a > ob and _first(book, it) and _over_shape(a - ob, ob):
                 out.append(Alloc(i, ob, "OVERPAYMENT", "E5"))
             else:
                 out.append(Alloc(i, ob, "", "E5"))

@@ -87,14 +87,14 @@ class _Book:
 
 
 def test_party_amount_needs_party_and_prefers_unique():
-    items = [_item(0, "ARI-2025-0000001", total=10000), _item(1, "ARI-2025-0000002", total=25000),
+    items = [_item(0, "ARI-2025-0000001", total=10000), _item(1, "ARI-2025-0000002", total=22345),
              _item(2, "ARI-2025-0000003", total=10000, party="C2")]
     res = R.Resolver(_Book(items))
     ln = _line(10000)
     assert res.by_party_amount(ln, [], {}) == []           # never amount alone
     h = res.by_party_amount(ln, ["C1"], {})
     assert h and h[0].items == [0] and h[0].tier == 4
-    h = res.by_party_amount(_line(35000), ["C1"], {})     # oldest prefix / subset
+    h = res.by_party_amount(_line(32345), ["C1"], {})     # oldest prefix / subset
     assert h and sorted(h[0].items) == [0, 1]
 
 
