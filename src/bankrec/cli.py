@@ -95,7 +95,6 @@ def cmd_process(args) -> int:
         args.phase,
         limit=args.limit,
         name=args.name,
-        engine=args.engine,
         hooks=hooks,
         note=args.note,
         tags=args.tag,
@@ -480,12 +479,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=0, help="only the first N bank lines (dev)")
     p.add_argument("--pdf-facts", action="store_true",
                    help="use the PDF facts cache as extra evidence (see `bankrec pdf-facts`)")
-    p.add_argument(
-        "--engine",
-        choices=["alt", "baseline"],
-        default="alt",
-        help="alt: operation-first (bankrec.alt); baseline: the conservative matcher",
-    )
     p.add_argument("--trace", action="store_true", help="record which rule fired per line (evaluate --explain reads it)")
     p.add_argument("--note", default="", help="hypothesis for this experiment (shown by `runs`)")
     p.add_argument("--tag", action="append", default=[], help="label for grouping runs (repeatable)")

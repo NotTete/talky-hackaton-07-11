@@ -1,14 +1,15 @@
 """Talky x Anthropic — bank reconciliation at scale.
 
-A deliberately small skeleton: load the dumps, match bank lines to open items, write
-a valid submission, score it locally. Grow it one rule at a time (see README.md).
+Load the dumps, resolve every bank line to open items, write a valid submission, score
+it locally. Grow it one rule at a time (see README.md).
 
     config.py    settings.toml + env overrides
     schema.py    the contract: closed lists, limits, tolerance, score weights
     data.py      reading the dumps into canonical tables (money as integer cents)
     text.py      normalising references and party names
-    matching.py  <- the part to build: which items does a bank line settle
-    rules.py     <- the part to build: exception / category codes (POLICIES.md)
+    alt/         the engine: classify the line, read its answer key, allocate the cash
+    pdf/         PDF -> facts (evidence for the engine, never decisions)
+    preprocess.py  batch / advice / card / cheque context for the build report
     pipeline.py  phase -> submission CSV
     evaluate.py  official scorer wrapper (vendor/bankrec_score.py)
     insights.py  golden vs submission diff: the `--explain` report

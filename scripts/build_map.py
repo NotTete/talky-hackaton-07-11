@@ -9,7 +9,7 @@ The sheet is a diagram (scripts/map_diagram.py) plus the reference notes for eac
 Every number and claim is derived, never typed:
 
   * closed lists, weights, limits, tolerance  <- src/bankrec/schema.py (imported)
-  * which codes are reachable                 <- AST scan of src/bankrec/rules.py
+  * which codes are reachable                 <- AST scan of src/bankrec/alt/excepts.py
   * rows, score, per-segment accuracy         <- scoring an existing submission
   * blocks and flows                          <- scripts/map_diagram.py (geometry checked)
   * styling                                   <- scripts/map_theme.css (a real stylesheet)
@@ -38,7 +38,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from bankrec import rules, schema  # noqa: E402
+from bankrec import schema  # noqa: E402
+from bankrec.alt import cats as alt_cats  # noqa: E402
+from bankrec.alt.engine import Engine  # noqa: E402
 from bankrec.builds import Builds  # noqa: E402
 from bankrec.config import load_settings  # noqa: E402
 from bankrec.data import Phase  # noqa: E402
@@ -49,6 +51,20 @@ import map_diagram  # noqa: E402
 
 OUT = ROOT / "pipeline-map.html"
 THEME = ROOT / "scripts" / "map_theme.css"
+
+# Resolver name (Engine.DOCUMENT_STEPS / INFERENCE_STEPS) -> the method that implements it.
+STEP_METHODS = {
+    "returned": "_returned",
+    "operation_id": "_operation_by_id",
+    "advice_ref": "_advice_by_ref",
+    "operation_total": "_operation_by_total",
+    "advice_party": "_advice_by_party",
+    "advice_total": "_advice_by_total",
+    "reference": "_by_reference",
+    "party_sweep": "_by_party_sweep",
+    "party_amount": "_by_party_amount",
+    "supplier_refund": "_supplier_refund",
+}
 
 # Stage table. `symbols` are imported before the page is written, so a renamed function
 # breaks the build instead of the documentation.
@@ -63,30 +79,31 @@ STAGES = [
     {
         "id": "index",
         "title": "Index the open items",
-        "src": "src/bankrec/matching.py",
-        "detail": "ItemIndex",
-        "symbols": ["matching:ItemIndex", "matching:Allocation"],
+        "src": "src/bankrec/alt/ledger.py",
+        "detail": "Ledger",
+        "symbols": ["alt.ledger:Ledger", "alt.ledger:Ledger.apply", "alt.ledger:Ledger.reopen"],
     },
     {
         "id": "candidates",
-        "title": "Propose candidates",
-        "src": "src/bankrec/matching.py",
-        "detail": "Matcher.match",
-        "symbols": ["matching:Matcher", "text:reference_tokens", "text:ref_variants"],
+        "title": "Resolve the line",
+        "src": "src/bankrec/alt/engine.py",
+        "detail": "Engine.resolve",
+        "symbols": ["alt.engine:Engine.resolve", "alt.engine:Engine.DOCUMENT_STEPS", "alt.engine:Engine.INFERENCE_STEPS"]
+        + [f"alt.engine:Engine.{m}" for m in STEP_METHODS.values()],
     },
     {
         "id": "allocate",
         "title": "Allocate the cash",
-        "src": "src/bankrec/matching.py",
-        "detail": "Matcher._rows · _sum",
-        "symbols": ["matching:Matcher._rows", "matching:Matcher._sum"],
+        "src": "src/bankrec/alt/engine.py",
+        "detail": "Engine._rows_from_docs · _share · _commit",
+        "symbols": ["alt.engine:Engine._rows_from_docs", "alt.engine:Engine._share", "alt.engine:Engine._commit"],
     },
     {
         "id": "explain",
         "title": "Name the difference",
-        "src": "src/bankrec/rules.py",
-        "detail": "exception_for · category_for",
-        "symbols": ["rules:exception_for", "rules:category_for", "rules:CATEGORY_KEYWORDS"],
+        "src": "src/bankrec/alt/excepts.py",
+        "detail": "Exceptions.decide · Categories.of",
+        "symbols": ["alt.excepts:Exceptions.decide", "alt.cats:Categories.of", "alt.cats:KEYWORDS"],
     },
     {
         "id": "score",
@@ -111,45 +128,21 @@ STAGES = [
 ]
 
 EXCEPTION_NOTES = {
-    "PARTIAL": "allocation always applies the whole open amount, so the remainder is never positive",
-    "OVERPAYMENT": "same reason: applied is never above open",
-    "SHORT_DISCOUNT": "needs payment terms and the three day grace window",
-    "SHORT_BANK_CHARGES": "shortfall within 60 EUR and 2 percent of the item",
-    "SHORT_WITHHOLDING": "10, 1.5 or 1.25 percent of the invoice total",
-    "SHORT_DISPUTE": "needs the advice text, which is not parsed",
-    "DUPLICATE_PAYMENT": "a book state, not a row property",
-    "UNIDENTIFIED": "also a category; never used on an item row",
+    "PARTIAL": "item still open after this line, and no specific reason applies",
+    "OVERPAYMENT": "cash above the open balance of a single item",
+    "SHORT_DISCOUNT": "payment terms grant that percentage and the cash arrived within the window",
+    "SHORT_BANK_CHARGES": "shortfall within 60 EUR and 2 percent, payer in another country",
+    "SHORT_WITHHOLDING": "10, 1.5 or 1.25 percent of the total, in a country that withholds",
+    "SHORT_DISPUTE": "the advice names a dispute reason; the rest stays open",
+    "DUPLICATE_PAYMENT": "a book state: the item was already settled, and the cash looks like the whole invoice",
+    "UNIDENTIFIED": "a receipt from a payer we do not know",
     "RETURNED": "re-opens an item that a collection already closed",
     "FX_DIFFERENCE": "item and line currency differ and the item clears",
 }
 
-SEGMENT_NEEDS = {
-    "ap_payment_multi": "expand payment_runs/",
-    "ap_payment_single": "expand payment_runs/",
-    "ar_1toN_text": "split the remittance text",
-    "ar_same_amount_fifo": "oldest-first inside the party",
-    "ar_short_discount": "terms + 3 day grace",
-    "ar_dd_returned": "re-open on return",
-    "ar_1toN_credit_note": "net the credit note",
-    "ar_instalment": "PARTIAL across lines",
-    "ar_partial": "emit PARTIAL at all",
-    "ar_n_to_m": "subset sum",
-    "ar_card_settlement": "expand card_settlements/",
-    "ar_cheque_deposit": "expand cheque_deposits/",
-    "ar_dd_batch": "expand direct_debit_batches/",
-    "ar_1toN_remittance": "parse remittance_advices/",
-    "ar_short_withholding": "withholding rates",
-    "ap_credit_note_netted": "net the credit note",
-    "ar_cheque_returned": "re-open on return",
-    "ar_overpayment": "cash above open",
-    "ap_partial": "emit PARTIAL at all",
-    "ar_retention": "retention schedule",
-    "nonitem_bank_fees": "already covered: keyword table",
-    "nonitem_bank_fees_intl": "already covered: keyword table",
-    "ar_1to1": "already covered: party gate",
-    "ar_ref_noise": "already covered: reference_tokens",
-    "ar_same_amount_month": "already covered: unique amount",
-}
+# Per-segment notes were baseline-era to-dos and went stale the day the alt engine landed.
+# The failure kind of each segment is `bankrec evaluate --explain`; nothing is typed here.
+SEGMENT_NEEDS: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -188,16 +181,27 @@ class Facts:
 
 
 def reachable_exceptions() -> set[str]:
-    """Non-empty string constants returned from rules.exception_for (AST, not grep)."""
-    tree = ast.parse((ROOT / "src" / "bankrec" / "rules.py").read_text(encoding="utf-8"))
+    """Non-empty exception codes returned from Exceptions.decide (AST, not grep).
+
+    `decide` returns `(code, amount)`, so the code is the first element of a returned
+    tuple, or the first element of a conditional like `("A" if x else "B", amount)`.
+    """
+    tree = ast.parse((ROOT / "src" / "bankrec" / "alt" / "excepts.py").read_text(encoding="utf-8"))
     found: set[str] = set()
+
+    def strings(node) -> None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value:
+            found.add(node.value)
+        elif isinstance(node, ast.IfExp):
+            strings(node.body)
+            strings(node.orelse)
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "exception_for":
+        if isinstance(node, ast.FunctionDef) and node.name == "decide":
             for sub in ast.walk(node):
-                if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Constant):
-                    if isinstance(sub.value.value, str) and sub.value.value:
-                        found.add(sub.value.value)
-    return found
+                if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Tuple) and sub.value.elts:
+                    strings(sub.value.elts[0])
+    return found & set(schema.EXCEPTIONS)
 
 
 def verify_stages() -> None:
@@ -438,7 +442,7 @@ def stage_load(facts: Facts) -> str:
 {notes(
     note("inv", "Money is an integer from <code>to_cents</code> onwards. That function is the only place a float exists, and the tolerance below it is <code>max(0.01, 0.5%)</code> in integer cents."),
     note("info", f"Bank lines are sorted by <code>(booking_date, bank_txn_id)</code> once, at load. PARTIAL, RETURNED and DUPLICATE_PAYMENT are properties of a moment, so order is part of the data model, not a convenience."),
-    note("info", f"Every master-derived lookup is built in <code>Masters.__init__</code>: {len(rules.CATEGORY_KEYWORDS)} category keywords, terms, IBAN owners, own accounts, party names. Nothing O(masters) runs inside the per-line loop."),
+    note("info", f"Every master-derived lookup is built in <code>Masters.__init__</code>: {len(alt_cats.KEYWORDS)} category keywords, terms, IBAN owners, own accounts, party names. Nothing O(masters) runs inside the per-line loop."),
 )}
 {cols}
     </div>
@@ -451,15 +455,15 @@ def stage_index(facts: Facts) -> str:
     if not facts.ready:
         return missing(stage, 2, facts)
     structures = table(
-        "ItemIndex: built once, queried per line",
+        "Ledger: built once, queried per line",
         ["structure", "key → value", "changes"],
         [
             '<td class="mono">items</td><td>item_id → row dict</td><td class="acc">never</td>',
-            '<td class="mono">open</td><td>item_id → open cents</td><td class="live">every settle</td>',
-            '<td class="mono">by_ref</td><td>document variant → item ids</td><td class="acc">never</td>',
-            '<td class="mono">by_party</td><td>party id → item ids</td><td class="acc">never</td>',
-            '<td class="mono">party_by_token</td><td>name token → party ids</td><td class="acc">never</td>',
-            '<td class="mono">_by_amount</td><td>open cents → item ids, plus a sorted key list</td><td class="live">every settle</td>',
+            '<td class="mono">open · paid</td><td>item_id → open / settled cents</td><td class="live">every settle · reopen</td>',
+            '<td class="mono">_by_doc</td><td>document variant → item ids, plus sorted key lists for prefix and suffix</td><td class="acc">never</td>',
+            '<td class="mono">_by_party</td><td>party id → item ids, oldest first</td><td class="acc">never</td>',
+            '<td class="mono">_party_tokens</td><td>name token → party ids</td><td class="acc">never</td>',
+            '<td class="mono">_by_amount</td><td>total cents → item ids, plus a sorted amount list</td><td class="acc">never</td>',
         ],
     )
     return f"""<section class="sec" id="index">
@@ -467,8 +471,8 @@ def stage_index(facts: Facts) -> str:
 {section_head(stage, 2)}
     <div class="sec-grid">
 {notes(
-    note("info", f"One pass over {n(facts.items)} items converts the polars frame into dicts. After that the per-line loop never touches a DataFrame: the candidate set is a handful of dict lookups."),
-    note("inv", "<code>open_cents</code> is the only mutable state. <code>settle()</code> decrements it, floors at zero, and patches the amount index with <code>bisect.insort</code> / delete. Nothing is rebuilt, so lookups stay logarithmic."),
+    note("info", f"One pass over {n(facts.items)} items converts the polars frame into dicts and builds every key list. After that the per-line loop never touches a DataFrame: the candidate set is a handful of dict lookups."),
+    note("inv", "<code>open</code> and <code>paid</code> are the only mutable state. <code>apply()</code> consumes an item, <code>reopen()</code> gives it back on a return. The key lists never change, so lookups stay logarithmic."),
     note("fail", "Anything that batches lines out of order loses the exceptions that depend on sequence: a returned direct debit re-opens an item, and a second payment can only be duplicate because the first one closed the item."),
 )}
 {structures}
@@ -481,24 +485,37 @@ def stage_candidates(facts: Facts) -> str:
     stage = STAGES[2]
     if not facts.ready:
         return missing(stage, 3, facts)
+    def first_line(method: str) -> str:
+        doc = (getattr(Engine, method).__doc__ or "").strip().splitlines()
+        return e(doc[0].strip()) if doc else ""
+
+    rows = []
+    for number, (stage_name, names) in enumerate(
+        (("document: first match wins", Engine.DOCUMENT_STEPS),
+         ("inference: best arithmetic fit wins", Engine.INFERENCE_STEPS)), 1
+    ):
+        for name in names:
+            rows.append(
+                f'<td class="mono live">{number}</td><td class="mono">{e(name)}</td>'
+                f'<td>{first_line(STEP_METHODS[name])}</td><td>{e(stage_name)}</td>'
+            )
+    rows.append(
+        f'<td class="mono live">3</td><td class="mono">supplier_refund</td>'
+        f'<td>{first_line(STEP_METHODS["supplier_refund"])}</td><td>fallback: only if nothing else explained the line</td>'
+    )
     gates = table(
-        "gates, in precision order: first one that reconciles wins",
-        ["#", "evidence", "accepts", "on miss"],
-        [
-            '<td class="mono live">1</td><td>document reference in the text</td><td class="mono">all referenced items, if they sum to the cash</td><td>falls through</td>',
-            '<td class="mono live">2</td><td>counterparty IBAN, then name tokens + amount</td><td class="mono">one item</td><td>falls through</td>',
-            '<td class="mono live">3</td><td>amount unique across all open items</td><td class="mono">that item</td><td>no candidate</td>',
-            '<td class="mono dead">4</td><td>documents: advices, dd batches, settlements, runs</td><td class="mono dead">not loaded</td><td class="dead">declared only</td>',
-        ],
+        "resolvers, in the order the engine tries them",
+        ["#", "resolver", "what it does", "arbitration"],
+        rows,
     )
     return f"""<section class="sec" id="candidates">
   <div class="wrap">
 {section_head(stage, 3)}
     <div class="sec-grid">
 {notes(
-    note("info", f"Each gate asks the same question with weaker evidence. The order is a precision ranking, not a filter: a gate that finds items it cannot reconcile falls through instead of returning nothing, because a candidate that is never proposed can never be recovered."),
-    note("info", "Reference variants are generated per document number (leading zeros, digit core) and SEPA vocabulary is dropped, so <code>EREF/NOTPROVIDED/RECHNUNG</code> do not look like invoice numbers."),
-    note("fail", f"Gate 1 returns only when the referenced items sum to the cash, so 1:N remittances reach gate 3 and usually fail there. Recall is {facts.metrics.get('recall', 0):.3f} against precision {facts.metrics.get('precision', 0):.3f}: the missing points are all on the proposal side."),
+    note("info", "The engine asks what kind of operation the line is before it looks for items. Document resolvers read a file that already lists the answer (a batch, a card settlement, an advice); the first one that fires wins outright."),
+    note("info", "Inference resolvers each propose a set of items, and the winner is the one whose amounts net to the cash. A truncated reference that resolves to one invoice must not beat a sweep that sums to the statement."),
+    note("info", f"PDF facts enter as evidence only: a replacement clause, a credit-note direction, an instalment plan, a retention. Recall is {facts.metrics.get('recall', 0):.3f} against precision {facts.metrics.get('precision', 0):.3f}: the missing points are on the proposal side."),
 )}
 {gates}
     </div>
@@ -509,28 +526,28 @@ def stage_candidates(facts: Facts) -> str:
 def stage_allocate(facts: Facts) -> str:
     stage = STAGES[3]
     code = """      <div class="term">
-        <div class="term-top"><b>matching.py</b><span>shortened</span></div>
-        <pre><span class="o"># gate 1: propose, check the sum, only then touch the book</span>
-rows = self._rows(txn, referenced, settle=False)
-<span class="a">if</span> self._sum(rows, ccy, ymd) &lt;= cash + tol:
-    self._commit(rows)              <span class="o"># now the balances move</span>
-    <span class="a">return</span> rows
-<span class="o"># else: nothing was settled, items stay open for later branches</span>
+        <div class="term-top"><b>alt/engine.py</b><span>shortened</span></div>
+        <pre><span class="o"># resolve(): document steps, then inference steps judged by the cash</span>
+<span class="a">for</span> name <span class="a">in</span> self.INFERENCE_STEPS:
+    rows = steps[name](ctx)
+    gap = abs(_net(rows, self.ledger) - abs(ctx.cash))
+    <span class="a">if</span> gap &lt;= tol:
+        <span class="a">return</span> self._accept(name, rows)   <span class="o"># _commit moves the book</span>
 
-<span class="o"># _rows(settle=True) is the default: every other caller still emits</span>
-<span class="o"># AND settles in one step, because they never need to undo a guess</span>
+<span class="o"># credit notes net: invoices - notes == cash, notes are full positive rows</span>
 <span class="a">def</span> _commit(self, rows):
     <span class="a">for</span> row <span class="a">in</span> rows:
-        self.index.settle(row.item_id, row.cents)</pre>
+        <span class="a">if</span> row.exception == "RETURNED": self.ledger.reopen(...)
+        <span class="a">else</span>: self.ledger.apply(row.item_id, row.cents)</pre>
       </div>"""
     return f"""<section class="sec" id="allocate">
   <div class="wrap">
 {section_head(stage, 4)}
     <div class="sec-grid">
 {notes(
-    note("inv", "Emission and settlement are the same step everywhere except gate 1: a caller that already knows its candidate is right (unique amount, a group entry, an advice line) settles inside <code>_rows</code>, so a later line sees the balance this one left behind."),
-    note("info", "Gate 1 is the one place a candidate set can be wrong (a reference that does not sum to the cash), so it alone defers: <code>_rows(..., settle=False)</code> builds the rows, the sum check decides, and only <code>_commit</code> touches the book. A referenced set that does not add up now falls through with every balance untouched."),
-    note("void", "Subset sum over the candidates, oldest-first FIFO for repeated identical amounts, credit note netting, and instalment chains. All of them are allocation changes, not candidate changes, which is why they belong to one function."),
+    note("inv", "Resolvers only propose rows. <code>_accept</code> is the single place that moves the book, so a later line sees the balance this one left behind and PARTIAL, DUPLICATE_PAYMENT and RETURNED stay possible."),
+    note("info", "Credit notes net against invoices: the cash to distribute is the cash plus the notes, and each note is a full positive row with no exception. Several named invoices with no amounts are cleared in full before any residual is sliced."),
+    note("info", "Amounts are compared in EUR and submitted in the item currency; <code>_in_currency</code> and <code>_to_item</code> are the only conversion points."),
 )}
 {code}
     </div>
@@ -570,7 +587,7 @@ def stage_explain(facts: Facts) -> str:
         ["order", "test", "result", "rows"],
         [
             f'<td class="mono live">1</td><td>counterparty is one of our IBANs</td><td class="mono">INTERNAL_TRANSFER · INTERCOMPANY</td><td class="n">{n(internal)}</td>',
-            f'<td class="mono live">2</td><td>folded text against {len(rules.CATEGORY_KEYWORDS)} keyword families</td><td class="mono">one of {len({c for c, _ in rules.CATEGORY_KEYWORDS})} named categories</td><td class="n">{n(resolved)}</td>',
+            f'<td class="mono live">2</td><td>folded text against {len(alt_cats.KEYWORDS)} keyword families</td><td class="mono">one of {len({c for c, _ in alt_cats.KEYWORDS})} named categories</td><td class="n">{n(resolved)}</td>',
             f'<td class="mono live">3</td><td>sign of the line</td><td class="mono">UNIDENTIFIED · BANK_FEES</td><td class="n">{n(fallback)}</td>',
         ],
     )
@@ -580,8 +597,8 @@ def stage_explain(facts: Facts) -> str:
     <div class="sec-grid">
 {notes(
     note("info", "Two closed lists, one per row shape: an item row carries an exception, a no-item row carries a category. The server rejects the whole file for an unknown value, so both lists are constants and both are validated before upload."),
-    note("info", f"Default is the empty code: a wrong code costs the whole transaction, a blank one only costs the code. <code>exception_for</code> is always called with a zero remainder, so its currency test is the only branch that can fire" + (f"; the code does return {' and '.join(facts.silent_codes)}, but nothing reaches it." if facts.silent_codes else ".")),
-    note("info", f"Categories are the fallback for lines that settle nothing: {n(fallback)} of {n(facts.no_item_rows)} no-item rows end in the sign default, so most of the category accuracy comes from a two-value guess, not from the keyword table."),
+    note("info", f"Default is the empty code: a wrong code costs the whole transaction, a blank one only costs the code. <code>Exceptions.decide</code> names the shortfall between the open balance and the cash" + (f"; reachable but never emitted on this build: {' and '.join(facts.silent_codes)}." if facts.silent_codes else ".")),
+    note("info", f"Categories are the fallback for lines that settle nothing: {n(fallback)} of {n(facts.no_item_rows)} no-item rows end in the sign default, the rest come from the IBAN, bank-code and keyword tables."),
 )}
 {exc_table}
 {cat_rows}
@@ -704,18 +721,18 @@ def stage_levers(facts: Facts) -> str:
     rows = []
     for name, info in ordered[:18]:
         acc = info["accuracy"]
-        need = SEGMENT_NEEDS.get(name, "") or "not mapped yet"
+        need = SEGMENT_NEEDS.get(name, "") or "evaluate --explain"
         cls = "live" if acc == 0 else ("acc" if acc >= 0.6 else "mono")
         rows.append(
             f'<td class="mono {cls}">{e(name)}</td>'
             f'<td class="n">{n(info["n"])}</td>'
             f'<td class="n">{acc:.3f}</td>'
             f'<td class="cell">{bar(info["n"], max(v["n"] for v in facts.segments.values()) * 1.0, acc >= 0.6)}</td>'
-            f'<td class="wrap{" dead" if need == "not mapped yet" else ""}">{e(need)}</td>'
+            f'<td class="wrap{" dead" if need == "evaluate --explain" else ""}">{e(need)}</td>'
         )
     seg_table = table(
         f"segments by lines, first {len(rows)} of {len(facts.segments)}",
-        ["segment", "lines", "accuracy", "lines (bar)", "what it needs"],
+        ["segment", "lines", "accuracy", "lines (bar)", "see"],
         rows,
     )
     zero = sum(1 for v in facts.segments.values() if v["accuracy"] == 0)

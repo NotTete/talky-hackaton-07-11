@@ -12,7 +12,7 @@ final score and looks like a matching bug. This module answers, per phase:
   * attachment  — how many bank lines the document index can explain, and which
                   documents were never claimed (requires a scan of the lines)
 
-It never matches items: that is `matching.py`'s job, and `--explain` reports it there.
+It never matches items: that is the engine's job (`alt/engine.py`), and `--explain` reports it there.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ FAMILY_FOLDERS = {
     "payment_run": "payment_runs",
 }
 
-# Mirrors `matching.Matcher._GROUP_ENTRY_FIELDS`: which columns make an entry usable.
+# Which columns make a group entry usable (the engine reads the same ones).
 # `(reference fields, amount field)`.
 GROUP_ENTRY_FIELDS = {
     "dd_batch": (("remittance_info", "mandate_id"), "amount_cents"),

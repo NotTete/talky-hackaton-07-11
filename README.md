@@ -11,9 +11,9 @@ This repo is a **small, working skeleton** with the plumbing already in place:
 - it **scores itself locally** with the same scorer the leaderboard uses,
 - it has one obvious place to implement each hard part.
 
-Baseline right now: `20.5` on the 1-month sample (the official starter scores ~10–15).
-A fuller reference implementation that already handles remittance advices and batch
-documents (~31 on the same sample) lives in `advanced/`.
+Score right now: `74.31` on the 1-month sample (the official starter scores ~10–15). One
+engine (`src/bankrec/alt/`), PDF facts on by default, and a regression ratchet
+(`make ratchet`) that fails if the output hash or any segment moves the wrong way.
 
 The Python environment (devenv, uv, PyTorch, Hugging Face) is documented separately in
 [`docs/DEVENV.md`](docs/DEVENV.md).
@@ -207,7 +207,6 @@ the average.
 ├── data/                      ← archives + masters + one dir per phase (gitignored)
 ├── builds/                    ← build repository: <date>-<time>-<hash>-<name> (gitignored)
 ├── vendor/bankrec_score.py    ← official scorer, vendored so you can score offline
-├── advanced/                  ← fuller reference implementation (~31), not imported
 ├── scripts/download_data.py   ← archives → data/{masters,sample,train,live,final}
 ├── scripts/build_map.py       ← regenerates pipeline-map.html from code + current score
 ├── scripts/map_diagram.py     ← the block diagram: node table, edge table, router, checker
@@ -216,6 +215,9 @@ the average.
 ├── notebooks/README.md        ← suggested first exploration cells
 ├── experiments/pdf_layout/    ← PDF structure/token/layout study (read its README)
 ├── tests/test_smoke.py        ← sample → CSV → scored, end to end
+├── tests/test_regression_sample.py ← output hash + score/segment floor (`make ratchet`)
+├── tests/fixtures/            ← the floor: sample.sha256, sample_floor.json
+├── scripts/ratchet.py         ← regression ratchet (`--update` to accept a change)
 ├── tests/test_submit_guard.py ← uploads never happen without a human confirmation
 └── tests/test_map.py          ← every stage still points at a real function
 └── src/bankrec/
@@ -225,10 +227,9 @@ the average.
     ├── schema.py              ← ⭐ the contract: columns, closed lists, tolerance
     ├── data.py                ← ⭐ polars loaders: dumps → canonical tables
     ├── text.py                ← ⭐ reference/name normalisation helpers
-    ├── matching.py            ← ⭐⭐ baseline matcher: what does a line settle?
-    ├── rules.py               ← ⭐⭐ baseline exception / category codes
-    ├── preprocess.py          ← baseline batch/advice lookups
-    ├── alt/                   ← ⭐⭐ the operation-first engine (`process --engine alt`)
+    ├── preprocess.py          ← batch/advice context for the build report
+    ├── pdf/                   ← PDF → facts (fields, clauses, flags): evidence, never decisions
+    ├── alt/                   ← ⭐⭐ the engine: operation-first
     │   ├── engine.py          ←   classify the line, then read its answer key
     │   ├── ops.py             ←   batches, card settlements, cheque deposits, runs
     │   ├── advice.py          ←   remittance advices: csv / txt / pdf / xlsx
@@ -270,12 +271,12 @@ Measured on the two available phases (positions -> fields -> clauses, cached by 
 | sample | 2,298 | 2.4 s | 94.6% | 94.6% | instalments 231, replaces 200, retention 86, advance 12 |
 | live | 16,688 | 22 s | 96.1% | 94.5% | instalments 1,308, replaces 1,009, credit notes 698, retention 155 |
 
-Facts are **evidence, not decisions**: the engine reads them only when `--pdf-facts` is
-passed, and the only rule wired so far is the `replaces` redirect. That rule moved the
-sample score by 0.00 (73.60 -> 73.60) because the current engine already resolves most of
-those payments; the measured ceiling for the remaining PDF facts is +1.9 (credit-note
-direction), +0.9 (instalments/retention/advance/replaces as a group) and +0.3 (service
-month), and each needs its own engine rule and its own measurement.
+Facts are **evidence, not decisions**, and they are on by default (`use_pdf_facts = true`;
+`process` builds the cache when it is missing). Consumed today: the `replaces` redirect
+(+0.00, the engine already resolved most of those), the credit-note `offset` veto on
+supplier refunds, the last instalment of a plan (`ar_instalment` 0.554 -> 0.694) and a
+retention release (`ar_retention_release` 0.000 -> 0.773): sample 74.07 -> 74.31. Still
+unused: advance (proforma) deduction, service month and assignment.
 
 ## 5. The data (full detail in `docs/DATA_DICTIONARY.md`)
 
@@ -402,54 +403,32 @@ duplicate `(bank_txn_id, item_id)`, and a line cannot mix item rows and a catego
 
 ## 8. Where to implement what
 
-### Two engines: `--engine alt` (default) and `--engine baseline`
+### One engine: `src/bankrec/alt/`
 
-`process` picks the matcher:
+`process` runs it; there is no switch. The old baseline (`matching.py` + `rules.py`,
+39.56) and the `advanced/` reference were removed once `alt` had absorbed them, and live
+in git history.
 
-```bash
-make process PHASE=sample                      # alt   (operation-first)
-$(PY) -m bankrec process --phase sample --engine baseline
-```
+It asks **what kind of banking operation is this line** first, because for four of the
+hardest segments the item list is not something to infer at all: it is written down in
+`direct_debit_batches/`, `card_settlements/`, `cheque_deposits/`, `payment_runs/` or a
+remittance advice, and the only real question is which file row belongs to which bank
+line. Its resolvers run in order of how much the evidence can be trusted (returned
+collection → batch/run id → advice → batch total), then the inference resolvers
+(references in the text, advice total, party sweep, party and amount), arbitrated by
+*which proposal actually adds up to the cash* rather than by order, then a last-resort
+supplier refund, then the category.
 
-| engine | sample score | alloc F1 | txn acc | exception macro-F1 |
-|---|---|---|---|---|
-| `baseline` (`matching.py` + `rules.py`) | 39.56 | 0.490 | 0.469 | 0.048 |
-| `alt` (`alt/engine.py`) | **73.60** | 0.830 | 0.734 | 0.504 |
+| where | what |
+|---|---|
+| `alt/engine.py` | `Engine.resolve`: the resolver order; allocation and credit-note netting |
+| `alt/excepts.py` | `Exceptions.decide`: which code explains the shortfall (discount, withholding, bank charge, partial, final instalment, retention release) |
+| `alt/cats.py` | the category of a line that settles nothing |
+| `pdf/` | facts the engine may read: replacement, credit-note direction, instalment plan, retention |
 
-They answer the same question in opposite orders. The baseline asks *which items could
-this line settle* and then checks whether a subset adds up. `alt` asks **what kind of
-banking operation is this line** first, because for four of the hardest segments the item
-list is not something to infer at all — it is written down in `direct_debit_batches/`,
-`card_settlements/`, `cheque_deposits/`, `payment_runs/` or a remittance advice, and the
-only real question is which file row belongs to which bank line. Its resolvers run in
-order of how much the evidence can be trusted (batch/run id → advice reference → amount
-fallback → references in the text → payer and amount), and the inference resolvers are
-arbitrated by *which proposal actually adds up to the cash* rather than by their order.
-
-The baseline is kept, runnable and unchanged: it is the control for every measurement,
-and `--engine baseline` still reproduces 39.56 exactly.
-
-### `matching.py` — what does this bank line settle?
-
-The baseline does three things: exact document reference in the text, party (IBAN or
-fuzzy name) + exact amount, and a unique amount fallback. The TODOs mark the next
-branches, roughly in order of value:
-
-| branch | segment(s) | idea |
-|---|---|---|
-| 1:N references | `ar_1toN_text`, `ar_n_to_m` | sum the referenced items; accept when the total matches |
-| remittance advice | `ar_1toN_remittance`, `ar_short_dispute` | parse the advice (csv/txt/pdf), use its rows and reasons |
-| aggregate documents | `ar_dd_batch`, `ar_card_settlement`, `ap_confirming` | expand the batch/run file, then match each entry |
-| credit notes | `*_credit_note_netted` | a payment can net an ARC/APC: add it as a positive row |
-| FIFO / service month | `ar_same_amount_fifo`, `ar_same_amount_month` | break amount ties by issue date / text month |
-| duplicates & returns | `*_duplicate*`, `*_returned*` | keep settled items indexed too; `RETURNED` re-opens |
-
-### `rules.py` — what code goes on the row?
-
-`exception_for()` is called once per emitted item row; `category_for()` once per line
-that settles nothing. Both start from the folded bank text. Add the discount /
-withholding / bank-charge arithmetic from the cheat sheet — each one is worth real points
-in TRAIN, and the macro-F1 weight makes the rare classes matter.
+**Adding a rule:** write it, run `make ratchet`, read the per-segment table, and keep it
+only if the score or a named segment improves without a segment dropping. If the output
+is meant to move, `make ratchet-update` in the same commit.
 
 ### Workflow that actually works
 
@@ -525,5 +504,3 @@ Measured on this machine with the official data:
 - `experiments/pdf_layout/` — what the PDFs actually contain: layout reconstruction,
   dictionary-vs-identifier token typing, fuzzy template clustering and per-company rules
   that drift over time (with measured numbers)
-- `advanced/` — a fuller implementation (advice parsing, batch expansion, subset-sum,
-  relaxed partials) kept as a reference, not as a starting point

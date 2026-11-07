@@ -36,14 +36,14 @@ Consequences that should drive every change:
 - Therefore: **breadth of patterns beats depth of tuning.** One branch per segment,
   measured, is the intended workflow.
 
-## 2. Why the baseline is deliberately conservative
+## 2. Why the engine only emits a pair on evidence
 
-`matching.py` only emits a pair on strong evidence (exact reference, or right party +
-right amount, or a globally unique amount). Because a wrong pair can only hurt
-(transaction accuracy) while a right pair helps twice (F1 and accuracy), the baseline
-never guesses. Its job is to be **obviously correct and obviously incomplete**, so a new
-branch is measurable against it. Do not "improve" it by loosening tolerances — add
-evidence instead.
+A wrong pair can only hurt (transaction accuracy) while a right pair helps twice (F1 and
+accuracy), so every resolver emits a pair only on evidence: a document that lists it, an
+exact reference, the right party and an amount that adds up, a globally unique amount.
+Do not "improve" recall by loosening tolerances; add evidence instead (a new resolver, a
+PDF fact). The control that tells you whether it worked is the ratchet (§9b), not an old
+engine.
 
 ## 3. Why money is integer cents
 
@@ -66,7 +66,7 @@ of truth for tolerance: one definition, no drift.
 Every real-world pattern (1:1 transfer, 1:N advice, batch, credit-note netting, FIFO
 monthly fee) is *the same question* — "which open items does this line settle?" — asked
 with different evidence. A ranked candidate list lets one allocator serve all of them:
-`ItemIndex` produces candidates, `Matcher` picks the subset whose sum explains the cash.
+the `Ledger` produces candidates, the allocator (`_rows_from_docs`, `_share`) picks the subset whose sum explains the cash.
 This is why the hard parts are additions to candidate generation rather than new
 top-level branches. Keep that separation: **generation asks "could it?", allocation asks
 "does it add up?"**.
@@ -105,35 +105,43 @@ a per-pair spread calculation. Note the deliberate tolerance asymmetry: the *pol
 allows bank spreads up to 3 %, but a submitted amount still has to be within 0.5 % of the
 *golden* amount — those are two different comparisons, don't merge them.
 
-## 9. Why `advanced/` exists but is not imported
+## 9. Why there is one engine (and how it is kept honest)
 
-It is a fuller implementation (~31 on the sample) kept as **reference**, not as a
-dependency: importing it would couple the skeleton to pandas-based code that predates the
-polars data layer, and would make the "start small" claim false. The point of keeping it
-is provenance — when a branch here looks arbitrary, the reason it matters is visible
-there. Treat it as documentation you can read, not code you inherit.
+There used to be two: a conservative baseline (`matching.py` + `rules.py`, 39.56 on the
+sample) kept as a control, and `bankrec.alt`. The baseline and the `advanced/` reference
+implementation were removed once `alt` (73 -> 74 on the sample) had absorbed everything
+they knew. They stay in git history; the commit before "single engine" is the place to
+read them. Keeping a second code path costs every change two edits, and the baseline had
+stopped being a useful comparison: it could not move.
 
-## 9b. Why there are two engines and the baseline is still wired up
+The control is now mechanical (§9b): `make ratchet` rebuilds the sample, compares the
+decompressed output hash and the score and per-segment accuracy against committed
+fixtures, and fails on a drop. "Alt minus baseline on the same phase" became "this
+commit minus the previous floor".
 
-`bankrec.alt` is a second matcher, selected by `process --engine alt` (the default);
-`--engine baseline` still runs `matching.py` + `rules.py` and still scores 39.56 on the
-sample, byte for byte. Keeping both is not indecision, it is the only way the number
-means anything: every claim in this file was measured as *alt minus baseline on the same
-phase*, and deleting the control would leave a score with nothing to compare against
-(§14 — coverage and consistency are all we have on unlabelled data).
+## 9b. How the engine thinks, and the regression ratchet
 
-The engines differ in which question comes first, and that is the whole idea:
+`bankrec.alt` asks **what kind of operation is this line** — a direct-debit batch credit,
+a card settlement, a confirming remittance at maturity, a returned collection, a plain
+transfer — and only then looks for items. For the aggregate segments there is nothing
+to rank: `direct_debit_batches/`, `card_settlements/`, `cheque_deposits/`,
+`payment_runs/` and the remittance advices *contain the answer*, and the only real
+question is which file row belongs to which bank line. The rest is evidence ranked by
+arithmetic (§5).
 
-* the baseline asks **which items could this line settle**, then checks whether a subset
-  adds up (§5);
-* `alt` asks **what kind of operation is this line** — a direct-debit batch credit, a
-  card settlement, a confirming remittance at maturity, a returned collection, a plain
-  transfer — and only then looks for items. For the aggregate segments there is nothing
-  to rank: `direct_debit_batches/`, `card_settlements/`, `cheque_deposits/`,
-  `payment_runs/` and the remittance advices *contain the answer*, and the only real
-  question is which file row belongs to which bank line.
+**The ratchet.** `scripts/ratchet.py` (`make ratchet`, `make ratchet-update`,
+`tests/test_regression_sample.py`) builds the sample with default settings and compares
+against `tests/fixtures/`: the sha256 of the *decompressed* CSV (§12), the score, and 65
+per-segment accuracies. A pure refactor must leave the hash identical. A rule meant to
+move the output runs `make ratchet-update` in the same commit and says what moved. Today
+it also caught a real bug: a set of credit notes iterated into the output made two
+`PYTHONHASHSEED`s produce different files.
 
-Three things inside it are worth knowing before changing it:
+**PDF facts are on by default** (`use_pdf_facts = true`; `process` builds the cache when
+it is missing). They enter only as evidence (§15c): a replacement clause, a credit-note
+`offset` veto, the last instalment of a plan, a retention release.
+
+Things inside the engine worth knowing before changing it:
 
 * **An operation only answers for a line whose amount it can account for**
   (`ops.select`). A batch id appears in the collection line's text *and* in its fee line
@@ -149,8 +157,12 @@ Three things inside it are worth knowing before changing it:
   dropped part is not a fixed string. `ledger` answers suffix queries with one bisect
   over a reversed copy of the key list, which is a list of strings rather than the
   3-million-entry tail index the obvious version needs (§11).
-
-`advanced/` stays what §9 says it is: documentation. `alt` is code.
+* **A lone amount coincidence never pays a credit note.** A -19.21 bank fee is not the
+  settlement of a -19.21 supplier credit note; a receipt equal to one open supplier credit
+  note from a known payer is a `_supplier_refund`, and only as a last resort.
+* **Credit notes are netted per party, and only when the invoices alone do not already
+  explain the cash** with three invoices or fewer; one invoice plus one note is too easy
+  to hit by coincidence (it cost 21 correct lines in `ar_ref_noise` when ungated).
 
 ## 10. Why polars for IO and Python for matching
 
@@ -159,7 +171,7 @@ multi-threaded Arrow engine wins by 10–100×; matching is a per-line loop wher
 candidate set is a handful of rows and the cost is Python dict lookups. Switching the
 *matcher* to polars would buy nothing and cost clarity. Switching the *loaders* to
 pandas costs seconds on TRAIN. If you vectorise a stage, do it where the row counts are
-large — and keep the boundary explicit (`items()` returns a DataFrame, `ItemIndex`
+large — and keep the boundary explicit (`items()` returns a DataFrame, `Ledger`
 converts to dict rows once).
 
 ## 11. Why every master-derived lookup is precomputed
@@ -220,7 +232,7 @@ that makes a second run fail in milliseconds instead of after an hour of matchin
 `vendor/bankrec_score.py` is the server's own code and `docs/` is the organisers' spec.
 Copying them in means (a) scoring works offline in 5 seconds instead of a round-trip per
 experiment, (b) you cannot accidentally optimise against a reimplementation that drifted,
-and (c) every rule in `rules.py` can be checked against the text it claims to implement.
+and (c) every rule in `alt/excepts.py` can be checked against the text it claims to implement.
 The cost is that these files are third-party: **never edit them** — if you need different
 behaviour, change the pipeline.
 
@@ -346,7 +358,7 @@ intentional trade-off into a test failure. Add tests where a mistake is *invisib
 
 | omitted | why it is not in the skeleton |
 |---|---|
-| PDF / XLSX advice parsing | needs an extractor dependency; the `advices.py` hook in `advanced/` shows where it plugs in. CSV/TXT already cover most advice volume. |
+| PDF / XLSX advice parsing | needs an extractor dependency; `alt/advice.py` already reads PDF advices. CSV/TXT already cover most advice volume. |
 | Bank code maps (`bank_code`/`bank_subcode`) | they are consistent per bank but undocumented; worth harvesting from TRAIN, not worth guessing. |
 | Drift handling (N43 → camt.053, advice layout change, ZAR subsidiary) | these are date-range facts about the data; they belong in candidate generation once you have seen the LIVE text, not in the baseline. |
 | ML ranking of candidates | the bottleneck is missing evidence (recall), not ranking quality. A model on top of a 10 %-recall candidate set learns the wrong thing. |
@@ -384,7 +396,7 @@ Not "it looks right". It is done when:
 
 `pipeline-map.html` is the one document whose whole job is to be *true*: seven stages, the
 function behind each of them, and the numbers the scorer currently reports. A hand-written
-version of that starts lying the first time someone edits `matching.py`, and a map that lies
+version of that starts lying the first time someone edits `alt/engine.py`, and a map that lies
 is worse than no map, because it is the first thing a new contributor (or an agent) reads.
 So `scripts/build_map.py` produces it, and nothing on it is typed by hand:
 
@@ -402,7 +414,7 @@ The page is a **schematic plus reference notes**, not a narrative: one block dia
 Three consequences worth keeping:
 
 - **A renamed function fails the build, not the docs.** `verify_stages()` imports every symbol
-a stage claims; if `Matcher._rows` disappears the generator exits with the list of missing
+a stage claims; if `Engine._rows_from_docs` disappears the generator exits with the list of missing
 references. That is the cheapest possible guard against documentation drift.
 - **Missing data means no numbers, never zero numbers.** With no submission to score, the
 page says so in the affected sections. It never prints `0.00` as if it had measured it

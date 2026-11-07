@@ -47,8 +47,8 @@ Build, evaluate, validate freely; hand `make push PHASE=LIVE` to the human.
 
 ```
 src/bankrec/
-  alt/            operation-first matcher (the engine that is used; `--engine baseline` keeps
-                  matching.py+rules.py as the control at 39.56 on sample)
+  alt/            the one engine (operation-first). The old baseline and advanced/ were
+                  removed; they live in git history.
     engine.py     class Engine(:87), _resolve_doc(:428); PDF hook at :448
     ops.py advice.py refs.py ledger.py excepts.py cats.py
   preprocess.py   batch/card/cheque/payment-run/advice context (generation only)
@@ -58,9 +58,9 @@ src/bankrec/
   pdf/            NEW — see §4
 ```
 
-Sample score of the current code: **73.60** (F1 0.8299 / txn 0.7344 / excF1 0.5038).
-Baseline engine (`--engine baseline`) is 39.56. Builds: 20 in `builds/`, newest three are
-all 73.60.
+Sample score of the current code: **74.31**. Control: `make ratchet` (hash + score + 65
+segment floors in `tests/fixtures/`); accept an intended change with `make ratchet-update`.
+
 
 ## 4. The PDF layer (what was just built, and what it is not)
 
@@ -94,22 +94,22 @@ Integration points that exist today:
 - `config.Settings.use_pdf_facts` (default **False**), `config/settings.toml`;
 - tests: `tests/test_pdf_facts.py` (6 tests).
 
-**It is wired, not integrated.** Only `replaces` is consumed, and it moved the score by
-0.00 (73.60 → 73.60) because the engine already resolves most of those payments. Facts for
-the valuable cases are extracted and unused.
+**Integrated and on by default.** Consumed: `replaces`, credit-note `offset` veto, final
+instalment, retention release (74.07 → 74.31). Unused: advance, service month, assignment.
 
-## 5. Next steps, in value order (measured ceilings, oracle substitution on 73.60)
+## 5. Next steps (ceilings were measured on 73.60; re-measure)
 
 | # | what | ceiling | notes |
 |---|---|---|---|
-| 1 | credit-note `direction`: a `refund` credit note must not be netted into a customer payment; an `offset` one may | **+1.92** | facts exist (698 live); needs a precision gate — a wrong gate costs precision |
-| 2 | instalments / retention / advance: expected amount per instalment so the right open invoice is chosen | **+0.86** | `clauses[].count`, `pct`, `amount` already parsed |
+| 1 | credit-note discovery in `ar_1toN_credit_note` (199 lines, acc 0.37): the netted ARC is not found | high | candidate generation, not PDF; PDF has no clause on customer notes |
+| 2 | advance (proforma) deduction; instalments whose earlier payments never matched | **+0.3** | `clauses[].count`, `pct`, `amount`, `amounts` parsed; done: final instalment, retention release, supplier refund |
 | 3 | service month: month-aware tie-break for equal monthly fees | **+0.31** | `clauses[].month` as `YYYY-MM` |
 | 4 | assignment / confirming | **+0.22** | weakest; skip unless cheap |
 
-Do them one at a time: process → evaluate → keep only if the score improves, and say which
-segment moved: `bankrec compare <old-build> <new-build>` (and `bankrec evaluate <build>
---explain` for individual lines).
+Do them one at a time: `make ratchet` → keep only if the score or a named segment improves
+and none drops; `bankrec compare <old-build> <new-build>` shows which segment moved
+(`bankrec evaluate <build> --explain` for individual lines). `make ratchet-update` in the
+same commit when the output is meant to move.
 
 Housekeeping that carries no score risk:
 

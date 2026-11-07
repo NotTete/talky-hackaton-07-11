@@ -9,12 +9,10 @@ the two lookups that answer "what does this bank line's operation actually conta
   DocumentContext  -> group_for(txn)   : the batch/run this line belongs to, if any
   AdviceIndex      -> find(...)        : the advice this line's payer sent, if any
 
-Generation only: deciding which *items* those documents settle is `matching.py`'s job
+Generation only: deciding which *items* those documents settle is the engine's job (`alt/engine.py`)
 (CLAUDE.md §5 — "generation asks could it, allocation asks does it add up").
-`advanced/bankrec_impl/candidates.py` and `advices.py` solved this once already (pandas,
-kept as reference per CLAUDE.md §9); this is the same evidence, built the way `data.py`
-already builds everything else: polars for the bulk read, plain Python structures for
-the per-line lookups.
+The evidence is built the way `data.py` already builds everything else: polars for the
+bulk read, plain Python structures for the per-line lookups.
 """
 
 from __future__ import annotations
@@ -250,7 +248,7 @@ class AdviceEntry:
     gross_cents: int = 0
     deduction_cents: int = 0
     paid_cents: int = 0
-    reason: str = ""  # raw text; classifying it into an exception is rules.py's job
+    reason: str = ""  # raw text; classifying it into an exception is alt/excepts.py's job
 
 
 @dataclass(slots=True)

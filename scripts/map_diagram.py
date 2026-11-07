@@ -27,18 +27,16 @@ NODES = [
     ("lookups", 2, 0, "masters lookups", ["terms · iban_owner", "own_accounts · names"], "exec"),
     ("items", 2, 1, "items frame", ["14 columns", "unique by item_id"], "exec"),
     ("txns", 2, 2, "bank lines", ["amount_cents", "booking-date order"], "exec"),
-    ("index", 3, 0, "ItemIndex", ["open_cents is state", "5 indexes + bisect keys"], "state"),
-    ("gate1", 3, 1, "1 · reference", ["ref_variants → by_ref"], "exec"),
-    ("gate2", 3, 2, "2 · party + amount", ["iban_owner, name votes"], "exec"),
-    ("gate3", 3, 3, "3 · unique amount", ["bisect over open amounts"], "exec"),
-    ("alloc", 4, 2, "allocate", ["_rows · _sum", "Allocation[]"], "exec"),
-    ("explain", 4, 3, "explain", ["exception_for", "category_for"], "exec"),
+    ("index", 3, 0, "Ledger", ["open / paid is state", "doc, party, amount keys"], "state"),
+    ("gate1", 3, 1, "1 · documents", ["returned, operation,", "advice: first wins"], "exec"),
+    ("gate2", 3, 2, "2 · inference", ["reference, sweep, party:", "best fit to cash wins"], "exec"),
+    ("gate3", 3, 3, "3 · fallback", ["supplier refund,", "then the category"], "exec"),
+    ("alloc", 4, 2, "allocate", ["_rows_from_docs · _share", "Row[]"], "exec"),
+    ("explain", 4, 3, "explain", ["Exceptions.decide", "Categories.of"], "exec"),
     ("run", 5, 1, "pipeline.run", ["one row per allocation", "else one category row"], "exec"),
     ("csv", 5, 2, "submission.csv.gz", ["5 columns", "every line covered"], "out"),
     ("score", 5, 3, "score_file", ["metrics + segments", "vendored scorer"], "out"),
     ("ship", 5, 4, "validate · gate · upload", ["a human types the phase"], "ship"),
-    ("documents", 3, 5, "4 · documents/", ["advices, dd batches,", "card + cheque, runs"], "gap"),
-    ("unwired", 4, 5, "not wired", ["subset sum · FIFO", "SHORT_* · RETURNED"], "gap"),
 ]
 
 # Semantic edges. Straight when the rows match, otherwise routed in the gutter.
@@ -60,9 +58,6 @@ EDGES = [
     ("run", "csv"),
     ("csv", "score"),
     ("score", "ship"),
-    # declared in POLICIES.md, not implemented
-    ("gate3", "documents"),
-    ("explain", "unwired"),
 ]
 
 # The state loop, drawn over the top of the sheet: allocation writes back into the index.
@@ -77,7 +72,7 @@ NODE_SECTION = {
     "masters": "load", "dumps": "load", "load": "load", "lookups": "load",
     "items": "load", "txns": "load", "index": "index",
     "gate1": "candidates", "gate2": "candidates", "gate3": "candidates",
-    "documents": "candidates", "alloc": "allocate", "unwired": "allocate",
+    "alloc": "allocate",
     "explain": "explain", "run": "score", "csv": "score", "score": "score",
     "ship": "ship",
 }
@@ -215,7 +210,7 @@ def build_fig() -> tuple[Fig, str]:
     router = Route(NODES)
 
     for src, dst in EDGES:
-        kind = "gap" if (src, dst) in {("gate3", "documents"), ("explain", "unwired")} else "main"
+        kind = "main"
         router.route(src, dst, kind)
     router.route_loop()
 

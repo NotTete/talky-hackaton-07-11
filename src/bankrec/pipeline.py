@@ -1,6 +1,6 @@
 """process: every bank line of a phase in, one named build out.
 
-    python -m bankrec process --phase sample --name baseline
+    python -m bankrec process --phase sample --name try
 
 Artifacts go to `builds/` as `YYYYMMDD-HHMM-<content-hash>-<name>.csv.gz` (see
 builds.py). Nothing is scored here and nothing is uploaded: `evaluate` and `push` are
@@ -23,9 +23,7 @@ from .data import Phase
 from .documents import structure
 from .experiments import capture_provenance
 from .hooks import DecisionHook, LineDecision
-from .matching import ItemIndex, Matcher
 from .preprocess import AdviceIndex, DocumentContext, load_advices
-from .rules import category_for
 from .schema import SUBMISSION_COLUMNS
 
 
@@ -44,7 +42,6 @@ def process(
     *,
     limit: int = 0,
     name: str = "",
-    engine: str = "alt",
     hooks: list[DecisionHook] | None = None,
     note: str = "",
     tags: list[str] | None = None,
@@ -81,14 +78,10 @@ def process(
     context = DocumentContext(phase)
     advices = AdviceIndex(load_advices(phase))
     document_report = structure(phase, context, advices.advices)
-    if engine == "alt":
-        # The operation-first engine (bankrec.alt): classify the line, then read the
-        # document that already lists its items. See src/bankrec/alt/engine.py. The
-        # baseline's DocumentContext/AdviceIndex are still built above because the build
-        # report describes the *documents of the phase*, which neither engine owns.
-        matcher = Engine(phase, items, masters, pdf=pdf_facts)
-    else:
-        matcher = Matcher(ItemIndex(items, masters), context, advices)
+    # One engine (bankrec.alt): classify the line, then read the document that already
+    # lists its items. The DocumentContext/AdviceIndex above only feed the build report,
+    # which describes the *documents of the phase*.
+    matcher = Engine(phase, items, masters, pdf=pdf_facts)
 
     print(
         f"[{phase.name}] {len(txns):,} bank lines, {len(items):,} items "
@@ -113,7 +106,7 @@ def process(
                 eta = (total - stats.lines) / rate if rate else 0
                 print(f"  {stats.lines:,}/{total:,} lines  {rate:,.0f}/s  eta {eta:,.0f}s", file=sys.stderr)
 
-            allocations = matcher.resolve(txn) if engine == "alt" else matcher.match(txn)
+            allocations = matcher.resolve(txn)
             if hooks:
                 decision = LineDecision(
                     bank_txn_id=txn["bank_txn_id"],
@@ -125,9 +118,7 @@ def process(
                 )
                 for hook in hooks:
                     hook.on_line(decision)
-            # The alt engine answers with a category row of its own when a line settles
-            # nothing, so the no-item branch takes its decision when there is one and
-            # falls back to rules.category_for for the baseline.
+            # The engine answers with a category row of its own when a line settles nothing.
             items_written = [row for row in allocations if getattr(row, "item_id", "")]
             if items_written:
                 for row in items_written:
@@ -137,7 +128,7 @@ def process(
                     stats.by_reason[key] = stats.by_reason.get(key, 0) + 1
             else:
                 decided = next((row for row in allocations if getattr(row, "category", "")), None)
-                category = decided.category if decided else category_for(txn, masters)
+                category = decided.category if decided else "UNIDENTIFIED"
                 out.write([txn["bank_txn_id"], "", "", category, decided.exception if decided else ""])
                 stats.no_item_rows += 1
                 stats.by_reason[category] = stats.by_reason.get(category, 0) + 1
