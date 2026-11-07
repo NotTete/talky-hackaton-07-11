@@ -3,7 +3,7 @@ PY ?= $(shell if [ -x .devenv/state/venv/bin/python ]; then echo .devenv/state/v
               elif command -v python3 >/dev/null; then echo python3; else echo python; fi)
 export PYTHONPATH := src
 
-.PHONY: help data data-lite data-all list verify doctor process evaluate explain push builds validate test lint map map-check whoami result
+.PHONY: help data data-lite data-all list verify doctor process evaluate explain push builds validate test lint map map-check map-serve whoami result
 
 help:
 	@echo "make data        docs + masters + 1-month sample (~10 MB download)"
@@ -22,6 +22,10 @@ help:
 	@echo "make validate [BUILD=<id>]   structural pre-flight only"
 	@echo "make doctor                  data + builds overview"
 	@echo "make test                    pytest"
+	@echo ""
+	@echo "make map                     rebuild pipeline-map.html from current code"
+	@echo "make map-check               exit 1 if pipeline-map.html is stale"
+	@echo "make map-serve               localhost:8000, rebuild + reload on save"
 
 PHASE ?= sample
 
@@ -72,6 +76,9 @@ map:
 
 map-check:
 	$(PY) scripts/build_map.py --check
+
+map-serve:
+	$(PY) scripts/build_map.py --serve
 
 whoami:
 	$(PY) -m bankrec whoami
