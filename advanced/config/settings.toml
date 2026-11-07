@@ -1,0 +1,47 @@
+# Bank-reconciliation pipeline settings.
+# Everything here is overridable from the CLI (see `python -m bankrec --help`).
+
+[paths]
+# Where the archives downloaded from https://hackathon.usetalky.com/data/v1/ were extracted.
+# Expected layout: <data_dir>/{masters,train,live,final}/...
+data_dir = "data/raw"
+submissions_dir = "submissions"
+# Scratch space for cached joins / debugging dumps.
+interim_dir = "data/interim"
+
+[run]
+phase = "sample"
+# Item tables to load. sample -> ["sample"]; train -> ["train"];
+# live -> ["train", "live"]; final -> ["train", "live", "final"].
+item_phases = ["sample"]
+# Only used for smoke tests. 0 = all rows.
+limit_txns = 0
+
+[scoring]
+# Official scorer tolerance: an amount is correct when
+# |submitted - golden| <= max(0.01, 0.5% of golden).
+amount_tolerance_pct = 0.005
+amount_tolerance_min = 0.01
+# Extra slack when matching a subset sum to the cash amount (covers FX spread,
+# withheld tax and intermediary bank charges before they are classified).
+cash_slack_pct = 0.03
+
+[matching]
+# Candidate generation: how many open items a single bank line may be matched to.
+max_candidates = 60
+max_items_per_txn = 14
+# Subset-sum search budget (nodes) per bank line; keeps the whole run bounded.
+subset_search_nodes = 200000
+# References shorter than this are ignored (avoid matching "25" in free text).
+min_ref_len = 5
+# Amount-only matching is only trusted when the amount is unique for the party.
+amount_only_score = 0.35
+
+[fx]
+# Policy: bank spread is always within 3% of the ECB reference rate.
+tolerance_pct = 0.03
+
+[classification]
+# Rules are in rules.py; this only controls the fallback when nothing matches.
+default_credit_category = "UNIDENTIFIED"
+default_debit_category = "BANK_FEES"

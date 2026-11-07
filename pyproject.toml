@@ -1,0 +1,79 @@
+[project]
+name = "talky"
+version = "0.1.0"
+description = "Talky hackathon project"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  # PyTorch stack (PyPI wheels bundle CUDA 12.x on Linux by default)
+  "torch>=2.6",
+  "torchvision>=0.21",
+  "torchaudio>=2.6",
+  # Transformers / HF ecosystem
+  "transformers>=4.48",
+  "accelerate>=1.2",
+  "datasets[audio]>=3.2",
+  "huggingface-hub>=0.34",
+  "safetensors>=0.4.5",
+  "tokenizers>=0.21",
+  "sentencepiece>=0.2",
+  "protobuf>=5.28",
+  "evaluate>=0.4.3",
+  # Data / science
+  "numpy>=1.26",
+  "scipy>=1.14",
+  "scikit-learn>=1.6",
+  "pandas>=2.2",
+  "matplotlib>=3.9",
+  "pillow>=11.0",
+  # Audio / speech
+  "soundfile>=0.12",
+  "librosa>=0.10",
+  "jiwer>=3.0",
+  # Utilities
+  "tqdm>=4.67",
+  "python-dotenv>=1.0",
+  "polars>=2.1.0",
+]
+
+[project.optional-dependencies]
+# Enable with `languages.python.uv.sync.extras = [ "llm" ];` in devenv.nix
+llm = [
+  "peft>=0.14",
+  "trl>=0.14",
+  "bitsandbytes>=0.45",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.9",
+  "ipykernel>=6.29",
+  "ipywidgets>=8.1",
+  "jupyterlab>=4.3",
+]
+
+[tool.uv]
+# CPU-only PyTorch (much smaller download, no CUDA). Uncomment everything
+# below if you don't have an NVIDIA GPU:
+#
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
+#
+# [tool.uv.sources]
+# torch = [{ index = "pytorch-cpu" }]
+# torchvision = [{ index = "pytorch-cpu" }]
+# torchaudio = [{ index = "pytorch-cpu" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,13 @@
+# Paths and phase selection. Everything else (rules, tolerances) lives in code so
+# you can read the rule next to the line that applies it.
+
+[paths]
+# Where scripts/download_data.sh extracts the archives.
+data_dir = "data/raw"
+submissions_dir = "submissions"
+
+[run]
+# sample | train | live | final
+phase = "sample"
+# Item tables to load. sample -> ["sample"]; live -> ["train", "live"].
+item_phases = ["sample"]
