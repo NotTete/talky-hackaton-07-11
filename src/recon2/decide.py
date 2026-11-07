@@ -10,6 +10,7 @@ Pure functions (DESIGN §4).  Depends only on:
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field
 
 from recon2.model import Alloc, Hyp, Item, Line
@@ -200,6 +201,21 @@ def split_cash(line: Line, hyp: Hyp, book, ctx: Ctx) -> dict[int, int] | None:
             for it in items:
                 out[it.idx] = it.open - dl[it.idx]
             return out
+        # late discount on a SUBSET of the discount rows: a unique exact combination is evidence
+        cand = [(i, v) for i, v in dl.items() if v]
+        if 1 <= len(cand) <= 40:
+            gap = s - t
+            hits = []
+            for k in (1, 2, 3):
+                for comb in itertools.combinations(cand, k):
+                    if abs(sum(v for _, v in comb) - gap) <= k:
+                        hits.append(comb)
+            if len(hits) == 1:
+                for it in items:
+                    out[it.idx] = it.open
+                for i, v in hits[0]:
+                    out[i] = book.items[i].open - v
+                return out
     p = hyp.partial_item if hyp.partial_item in hyp_items else hyp_items[-1]
     # residual to the single partial item; in-window discounts on the full rows are taken first
     for use_disc in ((True, False) if not cross else (False,)):
