@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -15,6 +16,12 @@ from recon2 import resolve as R
 from recon2.model import DATA, Alloc, Decision, Hyp, Line
 
 STATUS: dict[str, str] = {}
+MAX_ERR_RATE = 0.001   # strict mode: abort when per-line errors exceed 0.1 % of lines
+
+
+def strict_for(phase_name: str) -> bool:
+    """live/final (and RECON2_STRICT=1) must never silently run on stubs or swallowed errors."""
+    return os.environ.get("RECON2_STRICT") == "1" or phase_name.split(":")[0] in ("live", "final", "final_sim")
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -133,7 +140,10 @@ def stub_split(line: Line, hyp: Hyp, book, ctx=None) -> dict[int, int] | None:
             fx = getattr(getattr(ctx, "masters", None), "fx", None)
             if fx is None:
                 return None
-            a = fx.convert(a, line.ccy, ccy, line.day)
+            try:
+                a = fx.convert(a, line.ccy, ccy, line.day)
+            except KeyError:
+                return None
     if hyp.is_return:
         return {i: items[i].total for i in hyp.items}
     out = {}
@@ -188,6 +198,8 @@ _SHAPE = None
 class Engine:
     def __init__(self, phase_name: str, log=print):
         self.log = log
+        self.strict = strict_for(phase_name)
+        STATUS.clear()
         t0 = time.perf_counter()
         self.timings: dict[str, float] = {}
         load = _try("load")
@@ -237,7 +249,7 @@ class Engine:
         self.res = R.Resolver(self.book, ph.masters, self.parties, facts)
         global _SHAPE
         _SHAPE = self.res
-        self.extra = [e for e in {"sample": ["train"], "live": ["train"], "final": ["live"]}.get(phase_name, [])
+        self.extra = [e for e in {"sample": ["train"], "live": ["train"], "final": ["live"], "final_sim": ["train"]}.get(phase_name, [])
                       if (DATA / e).exists()]
         opsm = _try("ops")
         self.ops = None
@@ -265,7 +277,8 @@ class Engine:
                     advs = [a for a in advs if start - 10 <= a.payment_date <= end + 10]
                 for e in self.extra:
                     # advices received before the phase for payments inside it (H7: up to -8d)
-                    advs += [a for a in advm.load_advices(DATA / e) if a.payment_date >= start]
+                    end = max((ln.day for ln in ph.lines), default=start)
+                    advs += [a for a in advm.load_advices(DATA / e) if start - 10 <= a.payment_date <= end + 10]
                 self.advices = advm.AdviceIndex(advs)
             except Exception as ex:
                 STATUS["advices"] = f"stub (AdviceIndex: {type(ex).__name__}: {ex})"
@@ -280,6 +293,10 @@ class Engine:
             except Exception as ex:
                 STATUS["decide"] = f"stub (Ctx: {type(ex).__name__}: {ex})"
         self.timings["modules"] = time.perf_counter() - t
+        if self.strict:
+            bad = {k: v for k, v in STATUS.items() if v != "integrated"}
+            if bad:
+                raise RuntimeError("strict mode: modules not integrated: " + "; ".join(f"{k}={v}" for k, v in sorted(bad.items())))
         self.item_ids = [it.item_id for it in self.book.items]
         self.errors: dict[str, int] = {}
         self.errors_tb: set[str] = set()  # RECON2_TB=1 prints the first traceback per module
@@ -453,7 +470,21 @@ class Engine:
         self.timings["match"] = time.perf_counter() - t
         if slow:
             print(f"[recon2] {len(slow)} slow lines, worst {max(slow)[0]:.1f}s", file=sys.stderr, flush=True)
+        self.check_errors(n)
         return out
+
+    def check_errors(self, n: int) -> None:
+        tot = sum(self.errors.values())
+        fx = getattr(self.phase.masters.fx, "missing", {})
+        if fx:
+            print(f"[recon2] WARNING FX lookups without a rate: {fx}", file=sys.stderr, flush=True)
+        if not tot:
+            return
+        print(f"[recon2] per-line errors: {tot} of {n} lines", file=sys.stderr, flush=True)
+        for k, v in sorted(self.errors.items(), key=lambda x: -x[1])[:10]:
+            print(f"[recon2]   {v}x {k}", file=sys.stderr, flush=True)
+        if self.strict and tot > MAX_ERR_RATE * max(n, 1):
+            raise RuntimeError(f"strict mode: {tot} per-line errors > {MAX_ERR_RATE:.1%} of {n} lines")
 
 
 def _sample_carry(ph) -> dict[int, list]:

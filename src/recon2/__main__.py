@@ -63,6 +63,17 @@ def score(phase: str, path: Path) -> dict | None:
     return sc.score_submission(gold, path.read_bytes(), path.name)
 
 
+def verify_output(lines, path: Path) -> None:
+    """Every bank line of the phase appears in the file, and no foreign txn does."""
+    import csv
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as fh:
+        seen = {r["bank_txn_id"] for r in csv.DictReader(fh)}
+    want = {ln.txn for ln in lines}
+    if seen != want or len(want) != len(lines):
+        raise RuntimeError(f"output covers {len(seen)} txns, phase has {len(lines)} lines "
+                           f"(missing {len(want - seen)}, foreign {len(seen - want)})")
+
+
 def cmd_run(a) -> int:
     from recon2 import engine, trace, writer
     t0 = time.perf_counter()
@@ -73,6 +84,7 @@ def cmd_run(a) -> int:
     st = writer.write(decs, eng.item_ids, out, {})
     trace.write(decs, eng.item_ids, out.with_name(out.name.replace(".csv.gz", "") + ".trace.jsonl.gz"))
     eng.timings["write"] = time.perf_counter() - t
+    verify_output(eng.phase.lines, out)
     sha = hashlib.sha256(gzip.decompress(out.read_bytes())).hexdigest()[:16]
     n_item = sum(1 for d in decs if d.allocs)
     print(f"[recon2] {a.phase}: {len(decs)} lines, {n_item} with items, rows={st['rows']} demoted={st['demoted']} sha={sha}")

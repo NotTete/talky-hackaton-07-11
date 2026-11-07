@@ -15,7 +15,7 @@ from recon2.model import DATA, Item, Line, day
 from recon2.money import cents
 from recon2.textviews import build
 
-PHASES = ("sample", "live", "final", "train")
+PHASES = ("sample", "live", "final", "train", "final_sim")
 ITEM_COLS = ["item_id", "entity", "party_id", "party_name", "doc", "issue", "due", "ccy",
              "total", "open", "terms", "method", "po", "related", "carried"]
 
@@ -136,8 +136,12 @@ def _carried(root: Path) -> pl.DataFrame | None:
             cn.select("item_id", "party_name", pl.lit("").alias("terms"), pl.lit("").alias("method"),
                       pl.lit("").alias("po"), pl.col("related_document").alias("related")),
         ]
-    extra = pl.concat(frames).unique("item_id", keep="first", maintain_order=True)
-    o = o.join(extra, on="item_id", how="left")
+    if not frames:
+        print(f"[recon2] WARNING: no earlier-phase tables to rejoin carry-over in {root}", flush=True)
+        o = o.with_columns(*[pl.lit("").alias(c) for c in ("terms", "method", "po", "related")])
+    else:
+        extra = pl.concat(frames).unique("item_id", keep="first", maintain_order=True)
+        o = o.join(extra, on="item_id", how="left")
     return o.select(
         "item_id", "entity", "party_id", "party_name", pl.col("document_number").alias("doc"),
         pl.col("issue_date").alias("issue"), pl.col("due_date").alias("due"), pl.col("currency").alias("ccy"),
@@ -235,11 +239,26 @@ def _load_train_window(name: str) -> Phase:
     return Phase(name, root, lines, items, masters, golden)
 
 
+def _load_final_sim() -> Phase:
+    """FINAL dry run: LIVE's last booking month as the lines, data/masters as masters, LIVE's own
+    item tables.  Exercises strict mode / the loader / ops / advices on the final code path
+    without FINAL data.  Not scored (golden is None)."""
+    root = DATA / "live"
+    df = _read(root / "bank_transactions.csv.gz", ["booking_date"])
+    last = max(df["booking_date"].to_list())[:7]
+    lines = [ln for ln in _lines(root, last + "-01", last + "-31")]
+    for i, ln in enumerate(lines):
+        ln.idx = i
+    return Phase("final_sim", root, lines, _items(root), load_masters(DATA / "masters"), None)
+
+
 def load_phase(name: str) -> Phase:
     if name.startswith("train:"):
         return _load_train_window(name)
     if name not in PHASES:
         raise ValueError(f"unknown phase {name!r}")
+    if name == "final_sim":
+        return _load_final_sim()
     root = DATA / name
     if not root.exists():
         raise FileNotFoundError(root)
