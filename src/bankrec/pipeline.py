@@ -16,14 +16,10 @@ import sys
 import time
 from dataclasses import dataclass
 
-from .alt import Engine
 from .builds import Build, BuildWriter, Builds
 from .config import Settings
 from .data import Phase
-from .documents import structure
 from .experiments import capture_provenance
-from .hooks import DecisionHook, LineDecision
-from .preprocess import AdviceIndex, DocumentContext, load_advices
 from .schema import SUBMISSION_COLUMNS
 
 
@@ -42,7 +38,7 @@ def process(
     *,
     limit: int = 0,
     name: str = "",
-    hooks: list[DecisionHook] | None = None,
+    hooks: list | None = None,  # ignored (recon2 writes its own trace)
     note: str = "",
     tags: list[str] | None = None,
     pdf_facts=None,
@@ -56,100 +52,48 @@ def process(
     started = time.time()
     phase = Phase(settings, phase_name)
     builds = Builds(settings.builds_dir)
+    # One engine: recon2 (src/recon2, docs/recon2/DESIGN.md). The old bankrec.alt engine was
+    # removed; recon2 reads the phase from recon2.model.DATA (env RECON2_DATA).
+    from recon2 import engine as r2
 
-    masters = phase.masters
-    items = phase.items()
-    txns = phase.bank_transactions()
+    eng = r2.Engine(phase.name or phase_name or settings.phase)
+    decisions = eng.run()
     if limit:
-        txns = txns.head(limit)
-    if pdf_facts is None and getattr(settings, "use_pdf_facts", False):
-        from .pdf.facts import load as load_pdf_facts
-
-        pdf_facts = load_pdf_facts(phase)
-        if len(pdf_facts) == 0:
-            # No cache yet: build it (seconds, parallel) rather than silently scoring
-            # without evidence the settings ask for.
-            from .pdf.build import build_phase
-
-            pdf_facts, _ = build_phase(phase)
-            if len(pdf_facts) == 0:
-                print(f"[{phase.name}] no PDFs to read: running without pdf facts", file=sys.stderr)
-                pdf_facts = None
-    context = DocumentContext(phase)
-    advices = AdviceIndex(load_advices(phase))
-    document_report = structure(phase, context, advices.advices)
-    # One engine (bankrec.alt): classify the line, then read the document that already
-    # lists its items. The DocumentContext/AdviceIndex above only feed the build report,
-    # which describes the *documents of the phase*.
-    matcher = Engine(phase, items, masters, pdf=pdf_facts)
-
-    print(
-        f"[{phase.name}] {len(txns):,} bank lines, {len(items):,} items "
-        f"(items from: {', '.join(phase.used_item_phases or settings.item_phases)})",
-        file=sys.stderr,
-    )
+        decisions = decisions[:limit]
+    ids = eng.item_ids
+    import csv, gzip, tempfile
+    from pathlib import Path
+    from recon2 import writer as r2w
 
     stats = Stats(by_reason={})
-    hooks = list(hooks or [])
-    matcher.probing = bool(hooks)
-    total = len(txns)
-    tick = max(total // 20, 1) if total > 25_000 else 0
-    started_loop = time.time()
-
-    writer = BuildWriter(builds.root, phase.name or settings.phase, name)
-    with writer as out:
-        out.write(SUBMISSION_COLUMNS)
-        for txn in txns.iter_rows(named=True):
-            stats.lines += 1
-            if tick and stats.lines % tick == 0:
-                elapsed = time.time() - started_loop
-                rate = stats.lines / elapsed
-                eta = (total - stats.lines) / rate if rate else 0
-                print(f"  {stats.lines:,}/{total:,} lines  {rate:,.0f}/s  eta {eta:,.0f}s", file=sys.stderr)
-
-            allocations = matcher.resolve(txn)
-            if hooks:
-                decision = LineDecision(
-                    bank_txn_id=txn["bank_txn_id"],
-                    reason=getattr(matcher, "reason", ""),
-                    candidates=getattr(matcher, "candidates", 0),
-                    items=[row.item_id for row in allocations],
-                    amounts=[row.cents for row in allocations],
-                    exceptions=[row.exception for row in allocations],
-                    probe=getattr(matcher, "probe", None),
-                )
-                for hook in hooks:
-                    hook.on_line(decision)
-            # The engine answers with a category row of its own when a line settles nothing.
-            items_written = [row for row in allocations if getattr(row, "item_id", "")]
-            if items_written:
-                for row in items_written:
-                    out.write([txn["bank_txn_id"], row.item_id, f"{row.cents / 100:.2f}", "", row.exception])
+    with tempfile.TemporaryDirectory() as tmp:
+        guarded = Path(tmp) / "out.csv.gz"
+        r2w.write(decisions, ids, guarded, {})          # recon2 guards: never a rejected file
+        writer = BuildWriter(builds.root, phase.name or settings.phase, name)
+        with writer as out, gzip.open(guarded, "rt", newline="") as fh:
+            rd = csv.reader(fh)
+            out.write(next(rd))
+            for row in rd:
+                out.write(row)
+                if row[1]:
                     stats.item_rows += 1
-                    key = f"item:{row.exception or 'clean'}"
-                    stats.by_reason[key] = stats.by_reason.get(key, 0) + 1
-            else:
-                decided = next((row for row in allocations if getattr(row, "category", "")), None)
-                category = decided.category if decided else "UNIDENTIFIED"
-                out.write([txn["bank_txn_id"], "", "", category, decided.exception if decided else ""])
-                stats.no_item_rows += 1
-                stats.by_reason[category] = stats.by_reason.get(category, 0) + 1
-
-        build = out.publish(item_phases=phase.used_item_phases or [])
-        for hook in hooks:
-            path = hook.finalize(builds.root, build.id)
-            if path:
-                build.trace = path
-        build.note = note
-        build.tags = list(tags or [])
-        build.provenance = capture_provenance(settings, phase.name or settings.phase)
-        build.documents = document_report.as_metrics()
-        build.rows = stats.item_rows + stats.no_item_rows
-        build.lines = stats.lines
-        build.item_rows = stats.item_rows
-        build.no_item_rows = stats.no_item_rows
-        build.seconds = round(time.time() - started, 2)
-        builds.register(build)
+                    key = f"item:{row[4] or 'clean'}"
+                else:
+                    stats.no_item_rows += 1
+                    key = row[3]
+                stats.by_reason[key] = stats.by_reason.get(key, 0) + 1
+            stats.lines = len(decisions)
+            build = out.publish(item_phases=[])
+            build.note = note
+            build.tags = list(tags or [])
+            build.provenance = capture_provenance(settings, phase.name or settings.phase)
+            build.documents = {}
+            build.rows = stats.item_rows + stats.no_item_rows
+            build.lines = stats.lines
+            build.item_rows = stats.item_rows
+            build.no_item_rows = stats.no_item_rows
+            build.seconds = round(time.time() - started, 2)
+            builds.register(build)
 
     print(
         f"[{phase.name}] {stats.lines:,} lines -> {stats.item_rows:,} item rows "
