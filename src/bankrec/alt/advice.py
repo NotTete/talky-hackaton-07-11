@@ -374,6 +374,32 @@ class AdviceIndex:
                 return advice
         return None
 
+    def by_total(self, cents: int, tol: int, entity: str, ymd: int, min_lines: int = 1) -> Advice | None:
+        """The one advice of this entity whose total is the cash.
+
+        The payer-name route keeps failing on exactly the lines that matter most: the
+        masters hold several near-identical "Riegos Montalbar" customers, the statement
+        prints a truncated one, and the advice names a third spelling -- so a 367-document
+        advice never reaches the shortlist its line was looking in. The *total* has no
+        such problem. A sum of hundreds of invoices is effectively a fingerprint, and
+        requiring it to be unique within the entity and the date window makes it safe to
+        use without any name at all.
+        """
+        lo = bisect.bisect_left(self._totals, cents - tol)
+        hi = bisect.bisect_right(self._totals, cents + tol)
+        hits = []
+        for total in self._totals[lo:hi]:
+            for advice in self._by_total[total]:
+                if len(advice.lines) < min_lines:
+                    continue
+                if entity and advice.entity and advice.entity != entity:
+                    continue
+                if ymd and advice.received_ymd and abs(advice.received_ymd - ymd) > 25:
+                    continue
+                if advice not in hits:
+                    hits.append(advice)
+        return hits[0] if len(hits) == 1 else None
+
     def by_party_total(self, party_id: str, cents: int, ymd: int, tol: int) -> Advice | None:
         best, best_key = None, None
         window = []

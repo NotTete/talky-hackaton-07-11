@@ -100,7 +100,7 @@ class Engine:
     # better signal than "is listed first". A truncated reference that resolves to one
     # 1,265.84 invoice must not beat the 42-invoice sweep that sums to the 100,423.72
     # on the statement.
-    INFERENCE_STEPS = ("reference", "party_sweep", "party_amount")
+    INFERENCE_STEPS = ("reference", "advice_total", "party_sweep", "party_amount")
 
     def resolve(self, txn: dict) -> list[Row]:
         ctx = _Context(txn, self)
@@ -110,6 +110,7 @@ class Engine:
             "advice_ref": self._advice_by_ref,
             "operation_total": self._operation_by_total,
             "advice_party": self._advice_by_party,
+            "advice_total": self._advice_by_total,
             "reference": self._by_reference,
             "party_sweep": self._by_party_sweep,
             "party_amount": self._by_party_amount,
@@ -242,6 +243,26 @@ class Engine:
             if advice is not None:
                 return self._rows_from_advice(advice, ctx)
         return []
+
+    # An advice total is only a fingerprint when it is a sum of *many* documents; a
+    # two-line advice for 587.67 collides with any number of unrelated receipts, and
+    # matching on it costs more precision than it buys. The tolerance is tight for the
+    # same reason: this is an identity test, not an amount comparison.
+    ADVICE_TOTAL_MIN_LINES = 5
+    ADVICE_TOTAL_TOL_PCT = 0.001
+
+    def _advice_by_total(self, ctx: _Context) -> list[Row]:
+        cash = abs(ctx.cash)
+        advice = self.advices.by_total(
+            cash,
+            max(MATCH_TOL_MIN, int(round(cash * self.ADVICE_TOTAL_TOL_PCT))),
+            str(ctx.txn.get("entity") or ""),
+            ctx.ymd,
+            min_lines=self.ADVICE_TOTAL_MIN_LINES,
+        )
+        if advice is None:
+            return []
+        return self._rows_from_advice(advice, ctx)
 
     # -------------------------------------------------------------- step 5
     def _by_reference(self, ctx: _Context) -> list[Row]:
