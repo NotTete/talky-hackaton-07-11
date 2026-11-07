@@ -23,6 +23,12 @@ from ..text import alnum
 
 # Dates slip between the document and the statement (value date, weekend, maturity).
 DATE_WINDOW = 12
+# The amount-only fallback is an identity claim ("this line *is* that batch"), so it gets
+# an identity-sized tolerance and has to be unique. A card settlement net total that
+# happens to land within 1 % of an unrelated customer transfer used to expand 38 web
+# orders onto it.
+TOTAL_FALLBACK_TOL_PCT = 0.001
+TOTAL_FALLBACK_DAYS = 5
 
 
 def _ymd(value: str) -> int:
@@ -212,23 +218,24 @@ class Operations:
 
     def by_total(self, cents: int, account_id: str, ymd: int, tol: int, sign: int = 0) -> Operation | None:
         """Fallback for statements that print no operation id at all."""
+        tol = min(tol, max(2, int(round(cents * TOTAL_FALLBACK_TOL_PCT))))
         lo = bisect.bisect_left(self._totals, cents - tol)
         hi = bisect.bisect_right(self._totals, cents + tol)
-        best, best_key = None, None
+        hits: list[Operation] = []
         for total in self._totals[lo:hi]:
             for op in self._by_total[total]:
                 if op.kind in {"dd_entry", "cheque_entry"}:
                     continue
                 if sign and DIRECTION.get(op.kind, 0) and DIRECTION[op.kind] != sign:
                     continue
-                if op.account_id and account_id and op.account_id != account_id:
+                # Both sides know the account; a mismatch is a different operation, and
+                # an unknown account is not evidence either way.
+                if not op.account_id or not account_id or op.account_id != account_id:
                     continue
-                if op.ymd and ymd and abs(op.ymd - ymd) > DATE_WINDOW:
+                if op.ymd and ymd and abs(op.ymd - ymd) > TOTAL_FALLBACK_DAYS:
                     continue
-                key = (abs(op.total_cents - cents), op.kind, op.keys[0] if op.keys else "")
-                if best_key is None or key < best_key:
-                    best, best_key = op, key
-        return best
+                hits.append(op)
+        return hits[0] if len(hits) == 1 else None
 
 
 

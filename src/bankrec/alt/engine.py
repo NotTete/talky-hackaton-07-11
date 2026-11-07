@@ -46,6 +46,12 @@ MATCH_TOL_MIN = 2
 # every FX receipt look like a partial payment.
 FX_TOL_PCT = 0.03
 
+# How an item is meant to be settled (`payment_method` on the invoice). A web/POS order
+# is cleared by the acquirer's settlement, a receipt by its direct-debit batch, a cheque
+# by its deposit -- none of them by an incoming transfer. Letting a transfer pick them up
+# is how a 9,736.95 customer payment ends up explained by 38 unrelated card orders.
+TRANSFER_METHODS = {"", "transfer"}
+
 # Text that says the money came back. Every scheme has its own word for it.
 RETURN_WORDS = (
     "DEVOL", "DEVUELT", "IMPAYE", "IMPAYÉ", "RETOUR", "RUECKLASTSCHRIFT", "RUCKLASTSCHRIFT",
@@ -340,7 +346,9 @@ class Engine:
         candidates = [
             i
             for i in ctx.scope(self.ledger)
-            if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == side
+            if self.ledger.open_cents(i) > 0
+            and self.ledger.item(i)["side"] == side
+            and self._settleable_by_transfer(i)
         ]
         if not candidates:
             # A globally unique amount is evidence on its own (the baseline's one good
@@ -377,7 +385,9 @@ class Engine:
             open_items = [
                 i
                 for i in self.ledger.party_items(party_id)
-                if self.ledger.open_cents(i) > 0 and self.ledger.item(i)["side"] == ctx.side
+                if self.ledger.open_cents(i) > 0
+                and self.ledger.item(i)["side"] == ctx.side
+                and self._settleable_by_transfer(i)
             ]
             if len(open_items) < 2:
                 continue
@@ -461,6 +471,11 @@ class Engine:
                     if len(exact) == 1:
                         return exact
         return []
+
+    def _settleable_by_transfer(self, item_id: str) -> bool:
+        """POLICIES §5.3: card, direct-debit and cheque items are cleared by their own
+        aggregated operation, which arrives as its own bank line with its own document."""
+        return str(self.ledger.item(item_id).get("payment_method") or "") in TRANSFER_METHODS
 
     def _opens(self, item_ids: list[str], ctx: _Context) -> dict[str, int]:
         """Open balances of these items, all expressed in the bank line's currency."""
