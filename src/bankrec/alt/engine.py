@@ -231,7 +231,7 @@ class Engine:
         return self._rows_from_docs(self._expand(op.entries, ctx), ctx)
 
     def _advice_by_ref(self, ctx: _Context) -> list[Row]:
-        advice = self.advices.by_token(ctx.op_tokens)
+        advice = self.advices.by_token(ctx.op_tokens, abs(ctx.cash), _tol(ctx.cash))
         if advice is None:
             return []
         return self._rows_from_advice(advice, ctx)

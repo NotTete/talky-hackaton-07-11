@@ -21,6 +21,7 @@ package. Parsing is per file and the results are reused for the whole phase.
 
 from __future__ import annotations
 
+import bisect
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -339,33 +340,73 @@ class AdviceIndex:
             for total in {advice.total_cents, advice.sum_paid}:
                 if total:
                     self._by_total.setdefault(total, []).append(advice)
-            party = ledger.party_for_name(advice.payer_name)
-            if party:
+            # Every party the payer name could mean: advices name the payer the way the
+            # customer writes it, which is not always the way the masters do.
+            for party in ledger.parties_for_name(advice.payer_name, limit=3):
                 self._by_party.setdefault(party, []).append(advice)
         self._totals = sorted(self._by_total)
+        self._ref_keys = sorted(self.by_ref)
 
-    def by_token(self, tokens: list[str]) -> Advice | None:
+    def by_token(self, tokens: list[str], cash: int = 0, tol: int = 0) -> Advice | None:
+        """The advice a bank line names. Exact, then truncated, then one typo away.
+
+        The payment reference is printed on the advice and echoed in the bank text, but
+        it travels through the same noisy channel as everything else (POLICIES §5.5):
+        "PAY-2025-002301" in the statement against "PAY-2025-002307" on the advice. A
+        reference that is one digit out is still a reference.
+        """
         for token in tokens:
             advice = self.by_ref.get(token)
             if advice is not None:
+                return advice
+        if not cash:
+            return None
+        for token in tokens:
+            if len(token) < 8:
+                continue
+            near = [k for k in self._ref_keys if len(k) == len(token) and _one_off(k, token)]
+            if len(near) != 1:
+                continue
+            advice = self.by_ref[near[0]]
+            # A near-miss reference is a hypothesis, not an identity: require the advice
+            # to also account for the cash before acting on it.
+            if abs((advice.total_cents or advice.sum_paid) - cash) <= tol:
                 return advice
         return None
 
     def by_party_total(self, party_id: str, cents: int, ymd: int, tol: int) -> Advice | None:
         best, best_key = None, None
+        window = []
         for advice in self._by_party.get(party_id, ()):
+            if ymd and advice.received_ymd and abs(advice.received_ymd - ymd) > 21:
+                continue
+            window.append(advice)
             total = advice.total_cents or advice.sum_paid
             if abs(total - cents) > tol:
-                continue
-            if ymd and advice.received_ymd and abs(advice.received_ymd - ymd) > 21:
                 continue
             key = (abs(total - cents), advice.path)
             if best_key is None or key < best_key:
                 best, best_key = advice, key
-        return best
+        if best is not None:
+            return best
+        # Deliberately no "one advice in the window, close enough" fallback: measured,
+        # it costs more precision than the recall it buys. An advice is only accepted
+        # when its total matches the cash or when the line names its reference.
+        return None
 
     def __len__(self) -> int:
         return len(self.advices)
+
+
+def _one_off(a: str, b: str) -> bool:
+    """Same length, differing in one character or one adjacent transposition."""
+    diff = [i for i, (x, y) in enumerate(zip(a, b, strict=True)) if x != y]
+    if len(diff) == 1:
+        return True
+    if len(diff) == 2 and diff[1] == diff[0] + 1:
+        i, j = diff
+        return a[i] == b[j] and a[j] == b[i]
+    return False
 
 
 __all__ = ["Advice", "Line", "AdviceIndex", "load"]
