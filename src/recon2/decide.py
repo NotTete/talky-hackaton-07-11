@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from recon2.model import Alloc, Hyp, Item, Line
 
 DISPUTE_REASONS = ("COOP", "PRICE", "LOGISTIC", "SHORT DELIVERY", "PENAL", "RETRASO", "DAMAGED")
+NOT_DISPUTE = ("DISCOUNT", "DESCUENTO", "DTO", "SKONTO", "ESCOMPTE", "PRONTO PAGO", "EARLY")
 WHT_DEFAULTS = {"BR01": (150, 1000), "MA01": (150, 1000), "MX01": (125, 1000)}
 DUP_WINDOW = {"AR": 15, "AP": 50}
 FX_BAND_BP = 300          # cross-ccy: converted cash within 3% of open -> fully cleared
@@ -298,7 +299,10 @@ def decide(line: Line, hyp: Hyp, book, ctx: Ctx, applied: dict[int, int]) -> lis
         adv = (hyp.advice or {}).get(i)
         if adv:                                                          # E4
             reason = (adv.get("reason") or "").upper()
-            if reason and any(k in reason for k in DISPUTE_REASONS) and it.kind == "ARI":
+            # Organiser examples: ANY stated deduction that is not a discount or withholding is a dispute.
+            _ded = abs(adv.get("ded") or 0) or max(0, abs(adv.get("gross") or 0) - abs(adv.get("paid") or 0))
+            if (reason and it.kind == "ARI" and reason.strip() != "RET" and not any(k in reason for k in NOT_DISPUTE)
+                    and (any(k in reason for k in DISPUTE_REASONS) or _ded > 0)):
                 dispute_done = True
                 out.append(Alloc(i, abs(adv.get("paid") or a), "SHORT_DISPUTE", "E4"))
                 continue
