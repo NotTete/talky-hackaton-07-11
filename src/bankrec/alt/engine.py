@@ -519,7 +519,7 @@ class Engine:
                     rows.append(Row(item_id, abs(cents) or item["total_cents"], "RETURNED"))
                     continue
                 open_before = item["total_cents"]
-            cash = abs(cents) or open_before
+            cash = open_before if item_id in ctx.full_clear else (abs(cents) or open_before)
             if dtype == "CREDIT_NOTE" or item["kind"] == "credit_note":
                 # §2: a netted credit note is a full positive row with no exception.
                 rows.append(Row(item_id, open_before, ""))
@@ -597,15 +597,15 @@ class Engine:
             # One named invoice simply receives the whole cash: decide() explains the gap.
             out[invoices[0]] = (target, unique[invoices[0]][1])
         else:
-            left = target
-            for item_id in invoices:
-                take = min(opens[item_id], left)
-                if take <= 0:
-                    continue
-                out[item_id] = (take, unique[item_id][1])
-                left -= take
-                if left <= 0:
-                    break
+            # Several invoices named, and the cash does not match their sum by any
+            # documented rate. Clearing each in full is the better bet than slicing the
+            # cash across them: when the sum is *larger* the usual cause is that an
+            # earlier line of ours failed to allocate, so our balances are stale rather
+            # than the payment partial -- and a sliced amount is wrong twice (it loses
+            # the pair to the 0.5 % tolerance *and* mislabels it PARTIAL). Slicing is
+            # reserved for the single-invoice case above, which is where the real
+            # instalments and retentions live.
+            out.update({i: (opens[i], unique[i][1]) for i in invoices})
         return {
             i: (self._to_item(cents, self.ledger.item(i), currency, ymd), dtype)
             for i, (cents, dtype) in out.items()
@@ -624,6 +624,12 @@ class Engine:
                 ctx.reasons[key] = line.reason
             if line.deduction_cents:
                 ctx.deductions[key] = line.deduction_cents
+            else:
+                # The advice lists this document with nothing deducted: it is settled in
+                # full, whatever our own balance says. Our balance is the less reliable
+                # number here -- it is stale exactly when an earlier line of ours failed
+                # to allocate, and then the advice line looks like a partial payment.
+                ctx.full_clear.add(item_id)
         return self._rows_from_docs(docs, ctx)
 
 
@@ -632,7 +638,7 @@ class _Context:
 
     __slots__ = ("txn", "text", "tokens", "op_tokens", "cash", "ymd", "party", "side",
                  "reasons", "deductions", "want_count", "parties", "_scope", "is_return",
-                 "currency")
+                 "currency", "full_clear")
 
     def __init__(self, txn: dict, engine: Engine):
         self.txn = txn
@@ -664,6 +670,7 @@ class _Context:
         self.side = "AR" if self.cash > 0 else "AP"
         self.reasons: dict[str, str] = {}
         self.deductions: dict[str, int] = {}
+        self.full_clear: set[str] = set()
         # "REMESA CF0100... 3 PROVEEDORES" / "... 125 RECIBOS": the statement says how
         # many underlying operations this debit covers. It is the cheapest possible
         # disambiguator for a subset-sum (ops.select).
