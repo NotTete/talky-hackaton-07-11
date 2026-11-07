@@ -141,10 +141,17 @@ class Matcher:
         self.masters = index.masters
         self.context = context
         self.advices = advices
+        #: which rule produced the last decision (read by the `--trace` hook, never used
+        #: for control flow; see hooks.py). "none" = the line settled no item.
+        self.reason: str = "none"
+        #: how many candidates that rule had to choose from (small = trustworthy)
+        self.candidates: int = 0
 
     # -------------------------------------------------------------- matching
     def match(self, txn: dict) -> list[Allocation]:
         """Return the allocations of one bank line (empty = it settles no item)."""
+        self.reason = "none"
+        self.candidates = 0
         cash = abs(int(txn["amount_cents"]))
         tol = amount_tolerance_cents(cash)
         ymd = int(str(txn.get("booking_date") or "0").replace("-", "")[:8] or 0)
@@ -158,9 +165,15 @@ class Matcher:
                 ids.extend(self.index.by_ref.get(variant, ()))
         referenced = list(dict.fromkeys(self.index.open_items(ids)))
         if referenced:
-            rows = self._rows(txn, referenced)
+            self.reason = "exact_ref"
+            self.candidates = len(referenced)
+            # do NOT settle before knowing the set explains the cash: if it does not add
+            # up, those items stay open for the later branches (and for later lines).
+            rows = self._rows(txn, referenced, settle=False)
             if self._sum(rows, line_currency, ymd) <= cash + tol:
+                self._commit(rows)
                 return rows
+            self.reason = "exact_ref_misfit"
             # the text names items that do not add up (1:N advice, deductions...)
             # TODO: subset-sum / remittance advice / credit note netted (POLICIES §5.3-5.4)
 
@@ -172,18 +185,23 @@ class Matcher:
         #    which of them belongs to a party named in the text.
         iban_party = self._party_from_iban(txn)
         if iban_party:
+            self.reason = "iban_amount"
             rows = self._party_amount(txn, [iban_party], cash, tol, line_currency, ymd)
             if rows:
                 return rows
 
         rows = self._amount_and_name(txn, cash, tol, line_currency, ymd)
         if rows:
+            self.reason = "amount_name"
             return rows
 
         # 2b. Cross-currency or sparse candidates: fall back to name blocking, which is
         #     slower but does not depend on the amount index being in the same currency.
-        rows = self._party_amount(txn, self._parties_by_name(txn), cash, tol, line_currency, ymd)
+        parties = self._parties_by_name(txn)
+        rows = self._party_amount(txn, parties, cash, tol, line_currency, ymd)
         if rows:
+            self.reason = "name_amount"
+            self.candidates = len(parties)
             return rows
 
         # 2c. Aggregated operations: a direct-debit batch, card settlement, cheque
@@ -194,6 +212,8 @@ class Matcher:
             if group is not None:
                 rows = self._group_rows(txn, group)
                 if rows:
+                    self.reason = f"group:{group.kind}"
+                    self.candidates = len(group.entries)
                     return rows
 
         # 2d. Remittance advice: the only place a 1:N payment's documents and a
@@ -204,13 +224,17 @@ class Matcher:
             if advice is not None:
                 rows = self._advice_rows(txn, advice)
                 if rows:
+                    self.reason = "advice"
+                    self.candidates = len(advice.entries)
                     return rows
 
         # 3. Unique amount across all open items (no reference, no name).
         #    TODO: restrict by date window / entity, add FIFO for the monthly fees
         #    ("same amount, several open invoices" -> oldest first, POLICIES §5.6).
         same_amount = self.index.items_by_amount(cash, tol)
+        self.candidates = len(same_amount)
         if len(same_amount) == 1:
+            self.reason = "unique_amount"
             return self._rows(txn, same_amount)
 
         return []
@@ -223,6 +247,7 @@ class Matcher:
     def _amount_and_name(self, txn, cash, tol, line_currency, ymd) -> list[Allocation]:
         """Items in the amount window whose party name matches the bank text."""
         window = self.index.items_by_amount(cash, tol)
+        self.candidates = len(window)
         if not window:
             return []
         tokens = name_tokens(f"{txn.get('counterparty_name') or ''} {txn.get('text') or ''}")
@@ -289,7 +314,7 @@ class Matcher:
     def _party_name(self, party_id: str) -> str:
         return self.index.party_names.get(party_id, "")
 
-    def _rows(self, txn: dict, item_ids: list[str]) -> list[Allocation]:
+    def _rows(self, txn: dict, item_ids: list[str], *, settle: bool = True) -> list[Allocation]:
         rows: list[Allocation] = []
         for item_id in item_ids:
             item = self.index.items[item_id]
@@ -309,9 +334,13 @@ class Matcher:
                     ),
                 )
             )
+        if settle:
+            self._commit(rows)
+        return rows
+
+    def _commit(self, rows: list[Allocation]) -> None:
         for row in rows:
             self.index.settle(row.item_id, row.cents)
-        return rows
 
     def _apply_one(self, txn: dict, item_id: str, applied_cents: int, reason: str = "") -> Allocation | None:
         """Settle a *specific* amount against one item (unlike `_rows`, not the full open

@@ -92,8 +92,14 @@ STAGES = [
         "id": "score",
         "title": "Process, validate, evaluate",
         "src": "src/bankrec/pipeline.py",
-        "detail": "process · evaluate.score_file",
-        "symbols": ["pipeline:process", "evaluate:score_file", "schema:validate_row"],
+        "detail": "process · evaluate.score_file · hooks · insights",
+        "symbols": [
+            "pipeline:process",
+            "evaluate:score_file",
+            "schema:validate_row",
+            "hooks:DecisionHook",
+            "insights:diagnose",
+        ],
     },
     {
         "id": "ship",
@@ -504,23 +510,26 @@ def stage_allocate(facts: Facts) -> str:
     stage = STAGES[3]
     code = """      <div class="term">
         <div class="term-top"><b>matching.py</b><span>shortened</span></div>
-        <pre><span class="o"># gate 1: propose, then check that the set explains the cash</span>
-rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</span>
+        <pre><span class="o"># gate 1: propose, check the sum, only then touch the book</span>
+rows = self._rows(txn, referenced, settle=False)
 <span class="a">if</span> self._sum(rows, ccy, ymd) &lt;= cash + tol:
+    self._commit(rows)              <span class="o"># now the balances move</span>
     <span class="a">return</span> rows
-<span class="o"># else: fall through, balances already moved</span>
+<span class="o"># else: nothing was settled, items stay open for later branches</span>
 
-<span class="o"># _rows: one Allocation per item, then mutate the book</span>
-<span class="a">for</span> row <span class="a">in</span> rows:
-    self.index.settle(row.item_id, row.cents)</pre>
+<span class="o"># _rows(settle=True) is the default: every other caller still emits</span>
+<span class="o"># AND settles in one step, because they never need to undo a guess</span>
+<span class="a">def</span> _commit(self, rows):
+    <span class="a">for</span> row <span class="a">in</span> rows:
+        self.index.settle(row.item_id, row.cents)</pre>
       </div>"""
     return f"""<section class="sec" id="allocate">
   <div class="wrap">
 {section_head(stage, 4)}
     <div class="sec-grid">
 {notes(
-    note("inv", "Emission and settlement are one step: the rows returned to the writer are the rows the book already applied. That is why a later line sees the balance an earlier line left behind."),
-    note("fail", "The first gate settles the items before it checks the sum. A referenced set that does not add up falls through with its balances already reduced. Moving <code>settle</code> behind the decision is part of the same fix as the missing allocation logic."),
+    note("inv", "Emission and settlement are the same step everywhere except gate 1: a caller that already knows its candidate is right (unique amount, a group entry, an advice line) settles inside <code>_rows</code>, so a later line sees the balance this one left behind."),
+    note("info", "Gate 1 is the one place a candidate set can be wrong (a reference that does not sum to the cash), so it alone defers: <code>_rows(..., settle=False)</code> builds the rows, the sum check decides, and only <code>_commit</code> touches the book. A referenced set that does not add up now falls through with every balance untouched."),
     note("void", "Subset sum over the candidates, oldest-first FIFO for repeated identical amounts, credit note netting, and instalment chains. All of them are allocation changes, not candidate changes, which is why they belong to one function."),
 )}
 {code}
@@ -624,6 +633,7 @@ def stage_score(facts: Facts) -> str:
     note("inv", "Every bank line appears exactly once, as item rows or as a single category row, and never as both. No duplicate <code>(bank_txn_id, item_id)</code>. <code>make validate</code> checks the same rules the server does, before any upload."),
     note("info", f"The file is scored offline with the vendored scorer, so this number is the leaderboard's number, and the {len(facts.segments)} segments below are the same slices it reports."),
     note("info", f"The exception weight is worth {100 * schema.W_EXCEPTION * m.get('exception_macro_f1', 0):.2f} points because only {emitted} of {len(schema.EXCEPTIONS)} codes is ever emitted. Macro F1 averages over classes, not rows, so one rare code is worth as much as a segment with hundreds of lines."),
+    note("info", "<code>process --trace</code> runs a <code>DecisionHook</code> after the matcher has already decided (it observes, it cannot settle an item — that would break the chronological book in the index stage) and writes which rule fired and how many candidates it had per line. <code>evaluate --explain</code> reads that sidecar and the golden file to turn the score into a report: which failure kind lost the most lines, and which rule to fix next."),
 )}
 {score_table}
 {shapes}

@@ -28,6 +28,7 @@ Three commands, three decisions:
 make data                                  # docs + masters + 1-month sample (~10 MB)
 make process PHASE=sample NAME=baseline    # build an artifact into builds/
 make evaluate                              # score it (TRAIN/sample) or check coverage
+make explain                               # ...and say *why*: lines/pairs lost, per rule
 make push PHASE=LIVE                       # upload: asks you to type LIVE / SUBMIT FINAL
 make builds                                # the build repository
 ```
@@ -116,6 +117,20 @@ score = 100 × (0.50 × allocation F1        # (bank line, item) pairs, amount w
 Local scoring is the real thing — `evaluate.py` runs `vendor/bankrec_score.py`, the
 file the server uses. Trust it, not your intuition.
 
+**A number is not an explanation.** `make explain` (or `evaluate --explain`) diffs the
+build against the golden and says *why* the score is what it is: which failure kind
+lost the most lines (missing item, extra item, amount off, wrong exception, a real
+settlement filed as a bank fee…), how many allocation pairs that cost, which exception
+classes were never emitted, and example bank lines for each. It is derived from the same
+golden the scorer uses, so it can never disagree with the number.
+
+For a per-rule view (`process --trace` + `explain`), each build carries a
+`<build-id>.trace.jsonl.gz` sidecar saying which rule fired on every line and how many
+candidates it had to choose from. That is how "exact_ref looks precise" becomes
+"exact_ref is wrong on 44 % of the lines it claims" — the report tells you where to
+work next. Trace recording is a hook (`hooks.py`); it observes decisions and cannot
+change the submission, because matching is a chronological book (see CLAUDE.md §7).
+
 ---
 
 ## 4. Layout
@@ -141,6 +156,7 @@ file the server uses. Trust it, not your intuition.
 ├── scripts/map_svg.py         ← SVG primitives the diagram is built from
 ├── scripts/map_theme.css      ← the sheet's stylesheet, inlined by the generator
 ├── notebooks/README.md        ← suggested first exploration cells
+├── experiments/pdf_layout/    ← PDF structure/token/layout study (read its README)
 ├── tests/test_smoke.py        ← sample → CSV → scored, end to end
 ├── tests/test_submit_guard.py ← uploads never happen without a human confirmation
 └── tests/test_map.py          ← every stage still points at a real function
@@ -154,6 +170,8 @@ file the server uses. Trust it, not your intuition.
     ├── matching.py            ← ⭐⭐ IMPLEMENT HERE: what does a line settle?
     ├── rules.py               ← ⭐⭐ IMPLEMENT HERE: exception / category codes
     ├── pipeline.py            ← process: phase → build artifact
+    ├── hooks.py               ← observe-only decision hooks (`process --trace`)
+    ├── insights.py            ← golden vs submission diff: the `--explain` report
     ├── builds.py              ← build repository: naming, sidecars, index
     ├── evaluate.py            ← official scorer wrapper + per-segment report
     └── submit.py              ← presigned S3 upload + the human confirmation gate
@@ -381,5 +399,8 @@ Measured on this machine with the official data:
 - `docs/official-starter/` — the organisers' naive baseline and the reference scorer
 - `CLAUDE.md` — the decision log: why cents, why polars, why the matcher is
   conservative, why the book is stateful, what to leave alone
+- `experiments/pdf_layout/` — what the PDFs actually contain: layout reconstruction,
+  dictionary-vs-identifier token typing, fuzzy template clustering and per-company rules
+  that drift over time (with measured numbers)
 - `advanced/` — a fuller implementation (advice parsing, batch expansion, subset-sum,
   relaxed partials) kept as a reference, not as a starting point

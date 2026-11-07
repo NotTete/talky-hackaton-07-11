@@ -44,3 +44,22 @@ def test_sample_build_is_named_and_scores(sample_settings):
     report = score_file(build.file, sample_settings, "sample")
     assert report.ok, report.summary()
     assert report.score is not None and report.score > 0
+
+
+def test_insights_match_the_scorer_and_are_deterministic(sample_settings):
+    """The explanation must agree with the official number, and read the same twice."""
+    from bankrec.hooks import TraceRecorder
+    from bankrec.insights import diagnose, render
+
+    build = process(sample_settings, "sample", name="insight", hooks=[TraceRecorder(sample_settings.builds_dir)])
+    assert build.trace, "process --trace should publish a trace sidecar"
+
+    scored = score_file(build.file, sample_settings, "sample")
+    assert scored.ok, scored.summary()
+    first = diagnose(build, sample_settings, examples=1)
+    second = diagnose(build, sample_settings, examples=1)
+
+    # line success is derived independently, so it must agree with the official scorer
+    assert abs(first.lines_ok / first.lines - scored.metrics["txn_accuracy"]) < 0.002
+    assert first.trace and first.reason_all
+    assert render(first) == render(second)

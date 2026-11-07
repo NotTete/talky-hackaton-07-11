@@ -65,6 +65,8 @@ class Build:
     #: filled by `evaluate` (only phases with a golden have a score)
     metrics: dict = field(default_factory=dict)
     evaluated_at: str = ""
+    #: optional `<build-id>.trace.jsonl.gz` written by a DecisionHook (see hooks.py)
+    trace: str = ""
     #: filled by `push`
     pushed: dict = field(default_factory=dict)
 
