@@ -16,10 +16,37 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = ROOT / "config" / "settings.toml"
 
 
+def load_dotenv(path: Path | None = None, override: bool = False) -> Path | None:
+    """Read KEY=VALUE lines from .env into os.environ.
+
+    `.env.example` says to copy it to `.env` and that the Makefile and the CLI read it,
+    so this is the code that makes that true. The shell still wins by default, so an
+    exported HK_TOKEN is never silently replaced by a stale file. Values are stripped of
+    the quotes a hand-edited file usually leaves around them.
+    """
+    env = Path(path or os.environ.get("BANKREC_ENV") or ROOT / ".env")
+    if not env.exists():
+        return None
+    for line in env.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[7:].strip()
+        value = value.strip()
+        while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and (override or key not in os.environ):
+            os.environ[key] = value
+    return env
+
+
 @dataclass(slots=True)
 class Settings:
-    data_dir: Path = ROOT / "data" / "raw"
-    submissions_dir: Path = ROOT / "submissions"
+    data_dir: Path = ROOT / "data"
+    builds_dir: Path = ROOT / "builds"
     phase: str = "sample"
     # Which item tables to load. sample -> ["sample"]; live -> ["train", "live"].
     item_phases: list[str] = field(default_factory=lambda: ["sample"])
@@ -27,10 +54,6 @@ class Settings:
     @property
     def phase_dir(self) -> Path:
         return self.data_dir / self.phase
-
-    def submission_path(self, phase: str | None = None, suffix: str = ".csv.gz") -> Path:
-        self.submissions_dir.mkdir(parents=True, exist_ok=True)
-        return self.submissions_dir / f"submission_{phase or self.phase}{suffix}"
 
 
 def load_settings(path: Path | str | None = None) -> Settings:
@@ -47,13 +70,13 @@ def load_settings(path: Path | str | None = None) -> Settings:
     data_dir = Path(paths.get("data_dir", Settings.data_dir))
     if not data_dir.is_absolute():
         data_dir = ROOT / data_dir
-    subs = Path(paths.get("submissions_dir", Settings.submissions_dir))
-    if not subs.is_absolute():
-        subs = ROOT / subs
+    builds = Path(paths.get("builds_dir", Settings.builds_dir))
+    if not builds.is_absolute():
+        builds = ROOT / builds
 
     settings = Settings(
         data_dir=data_dir,
-        submissions_dir=subs,
+        builds_dir=builds,
         phase=run.get("phase", "sample"),
         item_phases=list(run.get("item_phases", ["sample"])),
     )
@@ -65,3 +88,6 @@ def load_settings(path: Path | str | None = None) -> Settings:
     if env := os.environ.get("BANKREC_ITEM_PHASES"):
         settings.item_phases = [p.strip() for p in env.split(",") if p.strip()]
     return settings
+
+
+load_dotenv()  # once, at import: same environment for the CLI, the Makefile and scripts

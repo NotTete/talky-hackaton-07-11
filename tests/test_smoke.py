@@ -17,26 +17,30 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from bankrec.config import load_settings  # noqa: E402
 from bankrec.evaluate import score_file  # noqa: E402
-from bankrec.pipeline import run  # noqa: E402
+from bankrec.pipeline import process  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def sample_settings():
+def sample_settings(tmp_path_factory):
     settings = load_settings()
     settings.phase = "sample"
     settings.item_phases = ["sample"]
+    # never pollute the real build repository from a test
+    settings.builds_dir = tmp_path_factory.mktemp("builds")
     if not (settings.phase_dir / "bank_transactions.csv.gz").exists():
-        pytest.skip("sample data missing: run ./scripts/download_data.sh")
+        pytest.skip("sample data missing: run make data")
     return settings
 
 
-def test_sample_submission_scores(sample_settings):
-    stats = run(sample_settings, "sample")
-    assert stats.output and stats.output.exists()
-    assert stats.lines > 0
-    # every bank line must be covered by at least one row
-    assert stats.item_rows + stats.no_item_rows >= stats.lines
+def test_sample_build_is_named_and_scores(sample_settings):
+    build = process(sample_settings, "sample", name="smoke")
+    assert build.file.exists()
+    # date + hash + optional name, e.g. 20261107-1045-a1b2c3d4-smoke
+    assert build.id.endswith("-smoke")
+    assert build.id.split("-")[1].isdigit() and len(build.sha256) == 64
+    assert build.lines > 0
+    assert build.item_rows + build.no_item_rows >= build.lines
 
-    report = score_file(stats.output, sample_settings, "sample")
+    report = score_file(build.file, sample_settings, "sample")
     assert report.ok, report.summary()
     assert report.score is not None and report.score > 0

@@ -129,6 +129,30 @@ and it looked like "polars is slow". `Masters` now builds `iban_owner`, `terms`,
 per-line path, **anything O(masters) must be built once, and anything O(items) must be
 indexed**. That single rule is the difference between 5 seconds and 30 minutes.
 
+## 11b. Why LIVE costs ~20× the sample (and what NOT to do about it)
+
+LIVE is 203 k lines against 1 M open items; the sample is 8.5 k against 66 k. That is
+~24× the loop and ~15× the index, so ~89 s versus ~5 s is the honest baseline, not a bug.
+
+Three things made it 815 s in practice, and none of them was "Python is slow":
+
+1. **Loading TRAIN items for LIVE.** `open_items_at_start.csv.gz` *is* the carry-over
+   balance; adding TRAIN marks years of settled invoices as open — 6.35 M items, a 48 s
+   index, and worse candidates. `Phase.items()` now refuses the extra tables and explains
+   why. Correctness fixes performance here, which is the good kind.
+2. **Name votes over common tokens.** Summing votes over every token expanded a single
+   common word ("POOL") into thousands of parties: 5.2 M comparisons per 3 k lines.
+   Selective-token blocking (rarest token first, then intersect) and amount-first
+   ordering cut it ~4×.
+3. **Unbounded tolerance windows.** The 0.5 % tolerance means big amounts have wide
+   windows; ranking thousands of equally plausible items is wasted work *and* hurts
+   precision. Returning `[]` above 250 candidates is both faster and more honest.
+
+What was deliberately **not** done: vectorising the whole matcher into polars joins. It
+would win, but it would move allocation out of booking-date order, and that order is what
+makes `PARTIAL` / `DUPLICATE_PAYMENT` / `RETURNED` possible (§7). Optimise the blocking,
+keep the loop.
+
 ## 12. Why the output must be deterministic
 
 A score you cannot reproduce is a score you cannot compare, and "it went up 0.4" is the
@@ -142,6 +166,12 @@ only signal this project has. Two traps found the hard way:
   Compare the *decompressed* output (`gzip -dc … | sha256sum`).
 
 If you add a data structure that is iterated into the output, make its order explicit.
+
+**A run must also never corrupt the output.** Two agents (or one agent and one human)
+running `run --phase live` concurrently used to write the same file: the result was a
+gzip stream with hundreds of KB of trailing zeros, which the scorer rejects and which
+`gzip -t` only warns about. Hence the per-pid temp file + `os.replace`, plus a lock file
+that makes a second run fail in milliseconds instead of after an hour of matching.
 
 ## 13. Why the scorer and the docs are vendored
 
@@ -168,12 +198,85 @@ README insists on validating the same file format on LIVE first. Any automation 
 uploads should validate locally, because the cheapest failure mode is the one that never
 reaches the server.
 
-## 16. Why data and submissions are gitignored, tokens are not committed
+### 15.1 The human gate on uploading (non-negotiable)
 
-The dumps are hundreds of MB and re-downloadable; submissions are generated. The team
+**A human always confirms before anything is uploaded. Always. No exceptions, and no
+escape hatch.** `bankrec/submit.py` prints the phase, the file, the row count and the
+sha256 of the *decompressed* CSV, then waits for the operator to type `LIVE` — or
+`SUBMIT FINAL` for the single FINAL shot — and aborts on anything else.
+
+Concretely, this is a rule for agents working in this repo:
+
+- An agent may build and evaluate freely: `make process PHASE=…`, `make evaluate`,
+  `make validate …`. Those are reversible and cost nothing but time.
+- **An agent must never submit.** There is no `--yes`/`--force` flag and no environment
+  variable that bypasses the prompt; if you add one you have broken the guarantee. With
+  no TTY (pi's `bash` tool, CI, cron, a Jupyter cell) `submit()` raises `SystemExit`
+  *before* any HTTP call, which is the intended outcome, not a bug to work around.
+- The correct behaviour is to stop and hand the command to the person who owns the
+  token: `make push PHASE=LIVE` (prints the build + warnings → prompt → upload) or
+  `make push PHASE=FINAL BUILD=<id>`. Show them the numbers; let them type the phrase.
+- **A 401 is always the token, never the code.** `whoami()` calls `GET /api/me`, the
+  platform's "am I authenticated" endpoint, and `team_token()` strips the quotes and the
+  `Bearer ` prefix a paste usually carries. Requesting an upload URL already consumes a LIVE
+  slot, so `/me` is the only safe way to check one: `make whoami`. `.env` is read at import
+  (`load_dotenv`), because `.env.example` has claimed that since the skeleton was written.
+- `tests/test_submit_guard.py` pins this: if the gate ever stops firing without a
+  terminal, a test fails before a scored submission can be lost, and another test fails if
+  anyone re-adds a `--yes`/`--force` flag to the CLI.
+
+Why so strict: an upload is irreversible, LIVE results are public, and FINAL is one
+shot. The cost of an accidental submit is unbounded while the cost of one extra typed
+word is four characters — the asymmetry decides it (§1).
+
+## 15b. Why the workflow is `process → evaluate → push` (and why builds are named)
+
+The three steps carry three different risks, so they are three commands, not one:
+
+* **process** is cheap and repeatable. It is allowed to be wrong.
+* **evaluate** is where wrongness is discovered. It writes the verdict into the registry.
+* **push** spends something irreversible: a LIVE slot, or the *single* FINAL shot.
+
+The failure mode this prevents is not hypothetical: "push whatever is in `submissions/`
+right now" loses the answers to the only questions that matter at that moment — *which*
+build is this, was it evaluated, is it the newest, was it already sent? So every build is
+an immutable artifact with a content hash in its name:
+
+```
+builds/20261107-1044-35d1df3b-baseline.csv.gz
+```
+
+The hash identifies the content, the stamp records when it was built. The same CSV rebuilt
+later gets a new stamp and the *same hash*, so "identical content already pushed" is a
+detectable fact rather than a memory, and a re-run cannot inflate the build history. The hash is over the **decompressed** CSV because
+gzip embeds a timestamp (§12) — hashing the `.gz` would make two identical submissions look
+different.
+
+`push` therefore reads the registry and warns: newer build exists / never evaluated /
+failed validation / content already pushed / FINAL is one shot. It never guesses the file.
+The warnings are printed *before* the typed confirmation, because the only moment they can
+change a decision is before the shot is spent.
+
+## 16. Why data and builds are gitignored, tokens are not committed
+
+The dumps are hundreds of MB and re-downloadable; builds are generated (and carry a hash,
+so they are reproducible from the code). The team
 token is a credential with a leaderboard side effect — it lives in the environment, never
 in `settings.toml` or code. This is also why `submit.py` reads `HK_TOKEN` and fails loudly
 when it is missing, instead of prompting or defaulting.
+
+The download script keeps **archives and extracted phases apart** (`data/archives/` vs
+`data/<phase>/`, plus `data/manifest.json`) because they answer different questions:
+the extracted tree is what the pipeline reads, the archive is the proof of *what the
+organisers actually published*. Keeping the archive is cheap relative to the
+alternative — "which data produced this 31.4?" is unanswerable once it is deleted, and
+one flaky Wi-Fi download becomes a 650 MB re-fetch. Hence: keep by default, opt out with
+`--no-keep-archives`. Extraction is idempotent and recorded per archive (sha256 +
+destination list) so a re-run repairs a half-unpacked phase instead of silently
+scoring on it, and downloads use `.part` + Range so an interrupted 650 MB fetch resumes
+rather than restarting. `train-lite` is a separate directory for the same reason it is a
+separate archive: it is a subset of *raw files*, so scoring it as `train` would quietly
+change what the number means.
 
 ## 17. Why the test asserts so little
 
@@ -205,6 +308,10 @@ intentional trade-off into a test failure. Add tests where a mistake is *invisib
 7. **No LIVE/FINAL golden**, no scraping, no token in the repo.
 8. **One change, one measurement**: `make score`, compare per-segment accuracy, keep only
    if it improves; TRAIN before LIVE, LIVE before FINAL.
+9. **A human confirms every upload.** `submit()` asks the operator to type the phase on a
+   real terminal and refuses without one; never add a bypass flag (§15.1).
+10. **The map is generated.** Never hand-edit `pipeline-map.html`; change
+   `scripts/build_map.py` (or the CSS) and run `make map` (§21).
 
 ## 20. How to tell an increment is done
 
@@ -214,4 +321,53 @@ Not "it looks right". It is done when:
 - `make validate` still passes,
 - `pytest` still passes,
 - the change is explainable by a sentence in `docs/POLICIES.md`,
+- `make map` was re-run if you touched a stage (the page is checked in),
 - and the README still describes the code (if you added a file, say why in the tree).
+
+## 21. Why the pipeline map is generated, not written
+
+`pipeline-map.html` is the one document whose whole job is to be *true*: seven stages, the
+function behind each of them, and the numbers the scorer currently reports. A hand-written
+version of that starts lying the first time someone edits `matching.py`, and a map that lies
+is worse than no map, because it is the first thing a new contributor (or an agent) reads.
+So `scripts/build_map.py` produces it, and nothing on it is typed by hand:
+
+| what the sheet says | where it comes from |
+|---|---|
+| closed lists, weights, limits, the tolerance | `import bankrec.schema` (no copy, no paraphrase of the values) |
+| which codes are reachable, whether `PARTIAL` can fire | an AST scan of `rules.exception_for` |
+| rows, score, per-segment accuracy, emitted codes | scoring an existing submission with the vendored scorer |
+| the blocks, their flows, and the state loop | `scripts/map_diagram.py`, drawn from a node table and an edge table |
+| which file implements each stage | `STAGES` in the generator, every symbol imported first |
+| styling | `scripts/map_theme.css`, a real stylesheet, inlined at build time |
+
+The page is a **schematic plus reference notes**, not a narrative: one block diagram
+(`fig. 1`), then one short section per stage with the rule, the file, and the numbers.
+Three consequences worth keeping:
+
+- **A renamed function fails the build, not the docs.** `verify_stages()` imports every symbol
+a stage claims; if `Matcher._rows` disappears the generator exits with the list of missing
+references. That is the cheapest possible guard against documentation drift.
+- **Missing data means no numbers, never zero numbers.** With no submission to score, the
+page says so in the affected sections. It never prints `0.00` as if it had measured it
+(a number you did not measure is a lie with a decimal point).
+- **The diagram is routed, not drawn by eye.** Blocks sit on a 6x6 grid; `Route` picks a
+channel inside each gutter (fewest crossings, never through a box, never sharing a lane with
+another edge), and `check()` raises if two boxes overlap, if a label overflows its box, or if
+text is longer than the box can hold. Editing the graph is a change to two lists, and the
+build tells you when it got ugly. There is no JS graph library: a fixed grid plus a router is
+smaller, deterministic, works offline, and renders without JavaScript.
+
+`make map-check` compares the committed file with a fresh render and fails when they differ.
+That is a *workflow* step after a scoring change, not a CI gate: the numbers move whenever
+the pipeline or the data does, and a red build for that would train people to ignore it.
+`pytest` keeps the data-free invariants instead (stages resolve, render is deterministic, no
+em dash), so a broken generator is still caught on every run.
+
+Serve mode (`make map-serve`) rebuilds on save and reloads the browser. It is deliberately
+stdlib-only (`http.server` + a file-mtime watcher + a 900 ms `/__rev` poll) because the
+value is the loop, not the tooling: edit a rule, look at the stage it belongs to, decide.
+
+The only client JS is the trace: hovering (or tabbing to) a block keeps that block and
+everything reachable from it, in both directions, and dims the rest. That is the cheapest
+way to answer "what does this feed, and what feeds it" without a paragraph of prose.

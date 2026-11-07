@@ -71,7 +71,9 @@ def category_for(txn: dict, masters: Masters) -> str:
     return "UNIDENTIFIED" if amount > 0 else "BANK_FEES"
 
 
-def exception_for(txn: dict, item: dict, applied_cents: int, remaining_cents: int, masters: Masters) -> str:
+def exception_for(
+    txn: dict, item: dict, applied_cents: int, remaining_cents: int, masters: Masters, reason: str = ""
+) -> str:
     """Exception for one (bank line, item) row (POLICIES.md §3).
 
     `applied_cents` is what this line puts against the item; `remaining_cents` is what
@@ -94,7 +96,7 @@ def exception_for(txn: dict, item: dict, applied_cents: int, remaining_cents: in
     tolerance = max(1, int(round(open_cents * 0.005)))
 
     if remaining_cents > tolerance:
-        return "PARTIAL"
+        return "SHORT_DISPUTE" if reason else "PARTIAL"
 
     item_currency = item.get("currency")
     line_currency = txn.get("currency")

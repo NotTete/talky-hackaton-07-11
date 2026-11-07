@@ -26,6 +26,7 @@ Layout produced by scripts/download_data.sh under data/raw/:
 from __future__ import annotations
 
 import bisect
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -159,6 +160,7 @@ class Phase:
 
     settings: Settings
     name: str | None = None
+    used_item_phases: list[str] | None = None
 
     def __post_init__(self) -> None:
         self.name = self.name or self.settings.phase
@@ -182,9 +184,23 @@ class Phase:
 
         Columns: item_id, side (AR/AP), kind, entity, party_id, party_name,
         document_number, issue_date, due_date, currency, total_cents, open_cents,
-        payment_terms, related_document.
+        payment_terms, related_document, reason, net_cents, tax_cents, po_reference,
+        payment_method.
         """
-        phases = phases or self.settings.item_phases
+        phases = list(phases or self.settings.item_phases)
+        # LIVE/FINAL ship open_items_at_start: it already encodes every balance carried
+        # over from the previous phases. Loading TRAIN on top of it would mark four years
+        # of already-settled invoices as open (wrong candidates, and 6x the memory).
+        if (self.dir / "open_items_at_start.csv.gz").exists():
+            ignored = [p for p in phases if p != self.name]
+            if ignored:
+                print(
+                    f"[{self.name}] open_items_at_start.csv.gz already carries the previous "
+                    f"phases' balances; ignoring item tables: {', '.join(ignored)}",
+                    file=sys.stderr,
+                )
+            phases = [self.name]
+        self.used_item_phases = phases
         frames = [self._items_for(p) for p in phases]
         frames = [f for f in frames if not f.is_empty()]
         if not frames:
@@ -213,6 +229,11 @@ class Phase:
                     to_cents("total_amount").alias("open_cents"),
                     pl.col("payment_terms"),
                     pl.lit("").alias("related_document"),
+                    pl.lit("").alias("reason"),
+                    to_cents("net_amount").alias("net_cents"),
+                    to_cents("tax_amount").alias("tax_cents"),
+                    pl.col("customer_po").alias("po_reference"),
+                    pl.col("payment_method"),
                 )
             )
 
@@ -234,6 +255,11 @@ class Phase:
                     to_cents("total_amount").alias("open_cents"),
                     pl.col("payment_terms"),
                     pl.lit("").alias("related_document"),
+                    pl.lit("").alias("reason"),
+                    to_cents("net_amount").alias("net_cents"),
+                    to_cents("tax_amount").alias("tax_cents"),
+                    pl.col("our_po").alias("po_reference"),
+                    pl.col("payment_method"),
                 )
             )
 
@@ -255,6 +281,11 @@ class Phase:
                     to_cents("total_amount").alias("open_cents"),
                     pl.lit("").alias("payment_terms"),
                     pl.col("related_document"),
+                    pl.col("reason"),
+                    to_cents("net_amount").alias("net_cents"),
+                    to_cents("tax_amount").alias("tax_cents"),
+                    pl.lit("").alias("po_reference"),
+                    pl.lit("").alias("payment_method"),
                 )
             )
 
@@ -279,6 +310,11 @@ class Phase:
                     to_cents("open_amount").alias("open_cents"),
                     pl.lit("").alias("payment_terms"),
                     pl.lit("").alias("related_document"),
+                    pl.lit("").alias("reason"),
+                    pl.lit(0).alias("net_cents"),
+                    pl.lit(0).alias("tax_cents"),
+                    pl.lit("").alias("po_reference"),
+                    pl.lit("").alias("payment_method"),
                 )
             )
 

@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="generator" content="scripts/build_map.py">
+<title>bankrec pipeline map</title>
+<meta name="description" content="A generated technical sheet for the bank reconciliation pipeline: block diagram, stage-by-stage rules, closed lists, score composition and the per-segment gaps.">
+<style>
+/* ===========================================================================
+   pipeline-map.css   [an engineering sheet, not a landing page]
+
+   Conventions, so the sheet stays a drawing:
+   - mono for every id, label and number; sans only for note prose
+   - one accent (vermilion) = signal: stage numbers, live codes, the state loop
+   - radius 0, no shadow, no gradient, no card: blocks are separated by rules
+   - figures get a dot grid, because a figure is a drawing surface
+   - dense: 13px prose, 11px tables, 9-10px labels
+   =========================================================================== */
+:root{
+  --bg:#0b0d0c;
+  --panel:#0f1412;
+  --rule:#232b26;
+  --rule-2:#191f1b;
+  --ink:#dfe4de;
+  --body:#b9c2bc;
+  --dim:#8b978f;
+  --faint:#5f6d66;
+  --acc:#e2603d;
+  --done:#7fa87f;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --pad:clamp(1rem,2vw,1.75rem);
+  --page:1280px;
+  --grid:rgba(255,255,255,.028);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--body);
+  font-family:var(--sans);font-size:13px;line-height:1.55;
+  font-synthesis-weight:none;
+}
+h1,h2,h3{margin:0;font-family:var(--mono);font-weight:500;color:var(--ink)}
+p{margin:0}
+a{color:inherit}
+code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
+.skip{position:absolute;left:-9999px}
+.skip:focus{left:8px;top:8px;z-index:60;background:var(--panel);border:1px solid var(--acc);padding:4px 8px;color:var(--ink)}
+:focus-visible{outline:1px solid var(--acc);outline-offset:2px}
+.sheet{max-width:var(--page);margin:0 auto;padding:0 var(--pad)}
+
+/* ------------------------------------------------------------------ header */
+.head{padding:24px 0 0}
+.head-top{
+  display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;
+  font-family:var(--mono);font-size:10.5px;color:var(--faint);
+  border-bottom:1px solid var(--rule);padding-bottom:8px;
+}
+.head-top b{color:var(--acc);font-weight:500}
+.head-top .right{margin-left:auto;display:flex;gap:14px;flex-wrap:wrap}
+.head h1{font-size:clamp(1.25rem,2.2vw,1.65rem);letter-spacing:-.01em;line-height:1.15;margin:16px 0 0;max-width:56ch}
+.head .abstract{margin-top:9px;max-width:84ch;color:var(--dim);font-size:12.5px}
+
+/* --------------------------------------------------------------------- nav */
+.nav{
+  position:sticky;top:0;z-index:20;margin-top:16px;
+  background:var(--bg);border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+}
+.nav-in{
+  max-width:var(--page);margin:0 auto;padding:0 var(--pad);
+  display:flex;gap:16px;align-items:center;height:30px;overflow-x:auto;scrollbar-width:none;
+}
+.nav-in::-webkit-scrollbar{display:none}
+.nav-in span{font-family:var(--mono);font-size:9.5px;color:var(--faint);white-space:nowrap}
+.nav a{
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);text-decoration:none;white-space:nowrap;
+  padding:2px 0;border-bottom:1px solid transparent;
+  transition:color .15s ease,border-color .15s ease;
+}
+.nav a:hover{color:var(--ink);border-bottom-color:var(--rule)}
+.nav a[aria-current="true"]{color:var(--ink);border-bottom-color:var(--acc)}
+
+/* -------------------------------------------------------------- spec strip */
+.spec{
+  margin:0;padding:0;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));
+  border-bottom:1px solid var(--rule);
+}
+.spec > div{padding:9px 12px;border-left:1px solid var(--rule-2);min-width:0}
+.spec > div:first-child{border-left:0;padding-left:0}
+.spec dt{font-family:var(--mono);font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint)}
+.spec dd{margin:3px 0 0;font-family:var(--mono);font-size:14px;color:var(--ink);font-variant-numeric:tabular-nums;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}
+.spec dd small{font-size:9.5px;color:var(--dim)}
+.spec dd.wide{font-size:11px;color:var(--dim);white-space:normal}
+
+/* ------------------------------------------------------------------ figure */
+.figwrap{padding:18px 0 0}
+.fig{
+  margin:0;padding:10px 10px 12px;border:1px solid var(--rule);
+  background:
+    linear-gradient(var(--grid) 1px,transparent 1px) 0 0/20px 20px,
+    linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/20px 20px,
+    var(--panel);
+}
+.fig svg{display:block;width:100%;height:auto}
+.fig-cap{
+  display:flex;gap:8px;align-items:baseline;margin-bottom:8px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);
+}
+.fig-cap b{color:var(--acc);font-weight:500}
+.fig-cap .right{margin-left:auto;text-transform:none;letter-spacing:0}
+.fig-src{
+  margin-top:8px;padding-top:6px;border-top:1px solid var(--rule-2);
+  font-family:var(--mono);font-size:9px;color:var(--faint);
+}
+.fig-src b{color:var(--dim);font-weight:500}
+.fig-legend{
+  display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:8px;
+  border-top:1px solid var(--rule-2);
+  font-family:var(--mono);font-size:9.5px;color:var(--dim);
+}
+.fig-legend .sw{display:inline-block;width:16px;height:0;margin-right:6px;vertical-align:middle;border-top:1px solid var(--dim)}
+.fig-legend .sw.dashed{border-top-style:dashed}
+.fig-legend .sw.accent{border-top-color:var(--acc);border-top-width:2px}
+.fig-legend .hint{margin-left:auto;color:var(--faint)}
+/* narrow screens: the wide drawing is replaced by the same blocks as a list */
+.fig-list{display:none;list-style:none;margin:0;padding:0;font-family:var(--mono);font-size:10.5px}
+.fig-list li{padding:5px 0;border-bottom:1px solid var(--rule-2);color:var(--dim)}
+.fig-list li:last-child{border-bottom:0}
+.fig-list b{color:var(--ink);font-weight:500}
+
+/* -------------------------------------------------- diagram interactivity */
+.fig svg .nd{cursor:pointer}
+.fig svg .nd rect{transition:stroke .12s ease}
+.fig svg .nd:hover rect,.fig svg .nd:focus rect{stroke:var(--acc)}
+.fig svg .nd:focus{outline:none}
+.fig svg.trace .nd{opacity:.18}
+.fig svg.trace .nd.on{opacity:1}
+.fig svg.trace .ed{opacity:.06}
+.fig svg.trace .ed.on{opacity:1}
+
+/* ----------------------------------------------------------------- section */
+.sec{padding:22px 0 26px;border-bottom:1px solid var(--rule)}
+.sec-head{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:12px}
+.sec-head .num{font-family:var(--mono);font-size:10px;color:var(--acc);min-width:1.2em}
+.sec-head h2{font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;flex:1 1 auto}
+.sec-head .src{font-family:var(--mono);font-size:9.5px;color:var(--faint);white-space:nowrap}
+.sec-head .src b{color:var(--dim);font-weight:500}
+.sec-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);gap:var(--pad);align-items:start}
+.sec-grid.flip{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}
+.sec-grid > *{min-width:0}
+
+/* ------------------------------------------------------------------- notes */
+.notes{display:grid;gap:11px}
+.note{border-left:1px solid var(--rule);padding-left:10px}
+.note dt{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:3px;color:var(--dim)}
+.note dd{margin:0;color:var(--body);font-size:12.5px}
+.note dd code{color:var(--ink)}
+.note-inv dt{color:var(--acc)}
+.note-void dt{color:var(--faint)}
+.note-void dd{color:var(--dim)}
+.note-fail dt{color:var(--acc)}
+.note-fail dd{color:var(--dim)}
+
+/* ------------------------------------------------------------------ tables */
+.tbl{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+.tbl caption{caption-side:top;text-align:left;padding-bottom:6px;font-family:var(--mono);font-size:9px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
+.tbl th{text-align:left;font-weight:500;font-size:9px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--rule);padding:4px 8px 4px 0}
+.tbl td{border-bottom:1px solid var(--rule-2);padding:4px 8px 4px 0;vertical-align:top;color:var(--body)}
+.tbl td:last-child,.tbl th:last-child{padding-right:0}
+.tbl tr:last-child td{border-bottom:0}
+.tbl .n{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink)}
+.tbl .mono{color:var(--ink)}
+.tbl .live{color:var(--acc)}
+.tbl .dead{color:var(--faint)}
+.tbl .acc{color:var(--dim)}
+.tbl .wrap{font-family:var(--sans);font-size:11.5px;color:var(--dim);line-height:1.4}
+.tbl .cell{width:22%;min-width:60px}
+/* a magnitude drawn to scale, with no track behind it */
+.bar{display:inline-block;height:6px;min-width:1px;background:var(--acc);vertical-align:middle}
+.bar.soft{background:#4a5a51}
+
+/* --------------------------------------------------------------- transcript */
+.term{border:1px solid var(--rule);background:var(--panel)}
+.term-top{display:flex;gap:10px;padding:4px 8px;border-bottom:1px solid var(--rule-2);font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.term-top b{color:var(--dim);font-weight:500}
+.term pre{margin:0;padding:8px 10px 10px;overflow-x:auto;font-size:10.5px;line-height:1.6;color:var(--body)}
+.term .p{color:var(--acc)}
+.term .o{color:var(--dim)}
+.term .g{color:var(--done)}
+.term .a{color:var(--ink)}
+
+/* ------------------------------------------------------------------ footer */
+.foot{padding:20px 0 40px;border-top:1px solid var(--rule)}
+.foot-in{max-width:var(--page);margin:0 auto;padding:0 var(--pad);display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:var(--pad)}
+.foot h2{font-size:11px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px}
+.foot p{color:var(--dim);font-size:12px;max-width:72ch}
+.foot dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-family:var(--mono);font-size:10.5px}
+.foot dt{color:var(--faint)}
+.foot dd{margin:0;color:var(--body)}
+.foot code{color:var(--ink)}
+
+/* --------------------------------------------------------------- collapse */
+@media (max-width:1040px){
+  .sec-grid,.sec-grid.flip{grid-template-columns:minmax(0,1fr)}
+  .spec{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .spec > div:nth-child(4){border-left:0;padding-left:0}
+  .spec > div:nth-child(-n+3){border-bottom:1px solid var(--rule-2)}
+  .foot-in{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:820px){
+  .fig svg{display:none}
+  .fig-list{display:block}
+  .spec{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .spec > div:nth-child(odd){border-left:0;padding-left:0}
+  .spec > div:nth-child(3){border-left:1px solid var(--rule-2);padding-left:12px}
+  .fig-legend .hint{display:none}
+}
+@media (max-width:560px){
+  .spec{grid-template-columns:minmax(0,1fr)}
+  .spec > div{border-left:0;padding-left:0}
+  .tbl{font-size:10.5px}
+  .tbl .cell{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important;animation:none!important}
+  .fig svg.trace .nd{opacity:1}
+  .fig svg.trace .ed{opacity:1}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#top">Skip to the sheet</a>
+
+<main id="top">
+<div class="sheet">
+<header class="head">
+  <div class="head-top">
+    <span><b>bankrec</b> / pipeline map</span>
+    <span class="right">
+      <span>phase sample</span>
+      <span>7 stages</span>
+      <span>measured</span>
+      <span>scripts/build_map.py</span>
+    </span>
+  </div>
+  <h1>How a bank line becomes a submission row</h1>
+  <p class="abstract">
+    One pass over the bank lines of a phase. A line ends as one or more item rows, or as a
+    single category row; nothing is skipped, because an omitted line counts as wrong. The
+    diagram shows the blocks and the direction of data. Each stage below gives the rule, the
+    file it lives in, and what it currently scores.
+  </p>
+</header>
+</div>
+<nav class="nav">
+  <div class="nav-in">
+    <span>fig. 1</span>
+    <a href="#load">load</a><a href="#index">index</a><a href="#candidates">candidates</a><a href="#allocate">allocate</a><a href="#explain">explain</a><a href="#score">score</a><a href="#ship">ship</a>
+    <a href="#levers">levers</a>
+  </div>
+</nav>
+<div class="sheet">
+<dl class="spec">
+    <div><dt>phase</dt><dd>sample</dd></div>
+    <div><dt>bank lines</dt><dd>8,499</dd></div>
+    <div><dt>rows out</dt><dd>9,569<small>6,252 item · 3,317 cat</small></dd></div>
+    <div><dt>score</dt><dd>21.23<small>of 100</small></dd></div>
+    <div><dt>precision / recall</dt><dd>0.629<small>0.110</small></dd></div>
+    <div><dt>csv sha256</dt><dd>35d1df3b508d<small>360 kB</small></dd></div>
+  </dl>
+
+<section class="figwrap" aria-label="Pipeline diagram">
+  <figure class="fig">
+    <div class="fig-cap"><b>fig. 1</b><span>blocks and flows, left to right</span><span class="right">18 blocks, 36 segments, 0 crossings</span></div>
+    <svg viewBox="0 0 1266 452" role="img" aria-labelledby="fig1-t fig1-d" class="fig-svg">
+      <title id="fig1-t">Pipeline diagram</title>
+      <desc id="fig1-d">Blocks and flows of the reconciliation pipeline</desc>
+      <defs>
+        <marker id="arw2b342f" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#2b342f"/></marker>
+        <marker id="arwe2603d" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#e2603d"/></marker>
+      </defs>
+      <g>
+        <text x="8" y="14" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="#5f6d66" text-anchor="start">FIG. 1   THE PIPELINE, LEFT TO RIGHT</text>
+        <line x1="188" y1="56" x2="222" y2="56" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="masters>load"/>
+        <line x1="188" y1="124" x2="192" y2="124" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="dumps>load"/>
+        <line x1="192" y1="124" x2="192" y2="58" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="dumps>load"/>
+        <line x1="192" y1="58" x2="222" y2="58" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="dumps>load"/>
+        <line x1="402" y1="56" x2="436" y2="56" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="load>lookups"/>
+        <line x1="402" y1="58" x2="406" y2="58" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="load>items"/>
+        <line x1="406" y1="58" x2="406" y2="124" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="load>items"/>
+        <line x1="406" y1="124" x2="436" y2="124" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="load>items"/>
+        <line x1="402" y1="70" x2="411" y2="70" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="load>txns"/>
+        <line x1="411" y1="70" x2="411" y2="190" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="load>txns"/>
+        <line x1="411" y1="190" x2="436" y2="190" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="load>txns"/>
+        <line x1="616" y1="56" x2="650" y2="56" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="lookups>index"/>
+        <line x1="616" y1="124" x2="620" y2="124" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="items>index"/>
+        <line x1="620" y1="124" x2="620" y2="58" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="items>index"/>
+        <line x1="620" y1="58" x2="650" y2="58" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="items>index"/>
+        <line x1="616" y1="190" x2="620" y2="190" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="txns>gate1"/>
+        <line x1="620" y1="190" x2="620" y2="124" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="txns>gate1"/>
+        <line x1="620" y1="124" x2="650" y2="124" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="txns>gate1"/>
+        <line x1="676" y1="92" x2="676" y2="106" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="index>gate1"/>
+        <line x1="676" y1="158" x2="676" y2="172" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="gate1>gate2"/>
+        <line x1="676" y1="224" x2="676" y2="238" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="gate2>gate3"/>
+        <line x1="830" y1="256" x2="834" y2="256" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="gate3>alloc"/>
+        <line x1="834" y1="256" x2="834" y2="190" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="gate3>alloc"/>
+        <line x1="834" y1="190" x2="864" y2="190" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="gate3>alloc"/>
+        <line x1="890" y1="224" x2="890" y2="238" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="alloc>explain"/>
+        <line x1="1044" y1="256" x2="1048" y2="256" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="explain>run"/>
+        <line x1="1048" y1="256" x2="1048" y2="124" stroke="#2b342f" stroke-width="1" class="ed ed-main" data-edge="explain>run"/>
+        <line x1="1048" y1="124" x2="1078" y2="124" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="explain>run"/>
+        <line x1="1104" y1="158" x2="1104" y2="172" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="run>csv"/>
+        <line x1="1104" y1="224" x2="1104" y2="238" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="csv>score"/>
+        <line x1="1104" y1="290" x2="1104" y2="304" stroke="#2b342f" stroke-width="1" marker-end="url(#arw2b342f)" class="ed ed-main" data-edge="score>ship"/>
+        <line x1="676" y1="290" x2="676" y2="388" stroke="#2b342f" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arw2b342f)" class="ed ed-gap" data-edge="gate3>documents"/>
+        <line x1="890" y1="290" x2="890" y2="388" stroke="#2b342f" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arw2b342f)" class="ed ed-gap" data-edge="explain>unwired"/>
+        <line x1="934" y1="172" x2="934" y2="18" stroke="#e2603d" stroke-width="1.2" class="ed ed-loop" data-edge="alloc>index"/>
+        <line x1="934" y1="18" x2="740" y2="18" stroke="#e2603d" stroke-width="1.2" class="ed ed-loop" data-edge="alloc>index"/>
+        <line x1="740" y1="18" x2="740" y2="40" stroke="#e2603d" stroke-width="1.2" marker-end="url(#arwe2603d)" class="ed ed-loop" data-edge="alloc>index"/>
+        <a href="#load" class="nd nd-exec" data-node="masters">
+        <rect x="8" y="40" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="16" y="57" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">masters/*.csv</text>
+        <text x="16" y="71" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">customers, suppliers,</text>
+        <text x="16" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">bank_accounts, terms, fx</text>
+        </a>
+        <a href="#load" class="nd nd-exec" data-node="dumps">
+        <rect x="8" y="106" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="16" y="123" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">&lt;phase&gt;/ dumps</text>
+        <text x="16" y="137" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">ar + ap invoices,</text>
+        <text x="16" y="148" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">credit notes, bank txns</text>
+        </a>
+        <a href="#load" class="nd nd-exec" data-node="load">
+        <rect x="222" y="40" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="230" y="57" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">Phase · Masters</text>
+        <text x="230" y="71" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">text in, cents out</text>
+        <text x="230" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">lookups built once</text>
+        <text x="230" y="93" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">sorted by booking date</text>
+        </a>
+        <a href="#load" class="nd nd-exec" data-node="lookups">
+        <rect x="436" y="40" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="444" y="57" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">masters lookups</text>
+        <text x="444" y="71" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">terms · iban_owner</text>
+        <text x="444" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">own_accounts · names</text>
+        </a>
+        <a href="#load" class="nd nd-exec" data-node="items">
+        <rect x="436" y="106" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="444" y="123" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">items frame</text>
+        <text x="444" y="137" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">14 columns</text>
+        <text x="444" y="148" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">unique by item_id</text>
+        </a>
+        <a href="#load" class="nd nd-exec" data-node="txns">
+        <rect x="436" y="172" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="444" y="189" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">bank lines</text>
+        <text x="444" y="203" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">amount_cents</text>
+        <text x="444" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">booking-date order</text>
+        </a>
+        <a href="#index" class="nd nd-state" data-node="index">
+        <rect x="650" y="40" width="180" height="52" fill="#12100e" stroke="#7c3a25" stroke-width="1"/>
+        <text x="658" y="57" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">ItemIndex</text>
+        <text x="658" y="71" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">open_cents is state</text>
+        <text x="658" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">5 indexes + bisect keys</text>
+        </a>
+        <a href="#candidates" class="nd nd-exec" data-node="gate1">
+        <rect x="650" y="106" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="658" y="123" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">1 · reference</text>
+        <text x="658" y="137" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">ref_variants → by_ref</text>
+        </a>
+        <a href="#candidates" class="nd nd-exec" data-node="gate2">
+        <rect x="650" y="172" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="658" y="189" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">2 · party + amount</text>
+        <text x="658" y="203" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">iban_owner, name votes</text>
+        </a>
+        <a href="#candidates" class="nd nd-exec" data-node="gate3">
+        <rect x="650" y="238" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="658" y="255" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">3 · unique amount</text>
+        <text x="658" y="269" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">bisect over open amounts</text>
+        </a>
+        <a href="#allocate" class="nd nd-exec" data-node="alloc">
+        <rect x="864" y="172" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="872" y="189" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">allocate</text>
+        <text x="872" y="203" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">_rows · _sum</text>
+        <text x="872" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">Allocation[]</text>
+        </a>
+        <a href="#explain" class="nd nd-exec" data-node="explain">
+        <rect x="864" y="238" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="872" y="255" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">explain</text>
+        <text x="872" y="269" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">exception_for</text>
+        <text x="872" y="280" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">category_for</text>
+        </a>
+        <a href="#score" class="nd nd-exec" data-node="run">
+        <rect x="1078" y="106" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="1086" y="123" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">pipeline.run</text>
+        <text x="1086" y="137" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">one row per allocation</text>
+        <text x="1086" y="148" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">else one category row</text>
+        </a>
+        <a href="#score" class="nd nd-out" data-node="csv">
+        <rect x="1078" y="172" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="1086" y="189" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">submission.csv.gz</text>
+        <text x="1086" y="203" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">5 columns</text>
+        <text x="1086" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">every line covered</text>
+        </a>
+        <a href="#score" class="nd nd-out" data-node="score">
+        <rect x="1078" y="238" width="180" height="52" fill="#0f1412" stroke="#2b342f" stroke-width="1"/>
+        <text x="1086" y="255" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">score_file</text>
+        <text x="1086" y="269" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">metrics + segments</text>
+        <text x="1086" y="280" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">vendored scorer</text>
+        </a>
+        <a href="#ship" class="nd nd-ship" data-node="ship">
+        <rect x="1078" y="304" width="180" height="52" fill="#12100e" stroke="#7c3a25" stroke-width="1"/>
+        <text x="1086" y="321" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#dfe4de" text-anchor="start">validate · gate · upload</text>
+        <text x="1086" y="335" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#8b978f" text-anchor="start">a human types the phase</text>
+        </a>
+        <a href="#candidates" class="nd nd-gap" data-node="documents">
+        <rect x="650" y="388" width="180" height="52" fill="none" stroke="#2b342f" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="658" y="405" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#8b978f" text-anchor="start">4 · documents/</text>
+        <text x="658" y="419" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#5f6d66" text-anchor="start">advices, dd batches,</text>
+        <text x="658" y="430" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#5f6d66" text-anchor="start">card + cheque, runs</text>
+        </a>
+        <a href="#allocate" class="nd nd-gap" data-node="unwired">
+        <rect x="864" y="388" width="180" height="52" fill="none" stroke="#2b342f" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="872" y="405" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#8b978f" text-anchor="start">not wired</text>
+        <text x="872" y="419" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#5f6d66" text-anchor="start">subset sum · FIFO</text>
+        <text x="872" y="430" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.4" fill="#5f6d66" text-anchor="start">SHORT_* · RETURNED</text>
+        </a>
+        <rect x="729.572" y="10" width="180.85599999999997" height="11" fill="#0b0d0c" stroke="#2b342f" stroke-width="1"/>
+        <text x="820" y="18" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.2" fill="#e2603d" text-anchor="middle">settle() · open_cents written back</text>
+        <text x="662" y="167" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="#8b978f" text-anchor="start">falls through</text>
+        <text x="662" y="233" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="#8b978f" text-anchor="start">falls through</text>
+        <text x="856" y="167" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="#8b978f" text-anchor="start">candidates</text>
+        <text x="856" y="233" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="#8b978f" text-anchor="start">row shape</text>
+        <text x="8" y="446" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="#5f6d66" text-anchor="start">one pass per phase; the gate column runs once per bank line</text>
+      </g>
+    </svg>
+    <div class="fig-legend">
+      <span><i class="sw solid"></i>executed</span>
+      <span><i class="sw dashed"></i>declared in POLICIES.md, not wired</span>
+      <span><i class="sw accent"></i>state written back into the index</span>
+      <span class="hint">hover a block to trace it · click to jump to its notes</span>
+    </div>
+    <ul class="fig-list">
+      <li><b>masters/*.csv</b> customers, suppliers, · bank_accounts, terms, fx</li>
+      <li><b>&lt;phase&gt;/ dumps</b> ar + ap invoices, · credit notes, bank txns</li>
+      <li><b>Phase · Masters</b> text in, cents out · lookups built once · sorted by booking date</li>
+      <li><b>masters lookups</b> terms · iban_owner · own_accounts · names</li>
+      <li><b>items frame</b> 14 columns · unique by item_id</li>
+      <li><b>bank lines</b> amount_cents · booking-date order</li>
+      <li><b>ItemIndex</b> open_cents is state · 5 indexes + bisect keys</li>
+      <li><b>1 · reference</b> ref_variants → by_ref</li>
+      <li><b>2 · party + amount</b> iban_owner, name votes</li>
+      <li><b>3 · unique amount</b> bisect over open amounts</li>
+      <li><b>allocate</b> _rows · _sum · Allocation[]</li>
+      <li><b>explain</b> exception_for · category_for</li>
+      <li><b>pipeline.run</b> one row per allocation · else one category row</li>
+      <li><b>submission.csv.gz</b> 5 columns · every line covered</li>
+      <li><b>score_file</b> metrics + segments · vendored scorer</li>
+      <li><b>validate · gate · upload</b> a human types the phase</li>
+      <li><b>4 · documents/</b> advices, dd batches, · card + cheque, runs</li>
+      <li><b>not wired</b> subset sum · FIFO · SHORT_* · RETURNED</li>
+    </ul>
+    <p class="fig-src"><b>source</b> scripts/map_diagram.py · positions are a 6 x 6 grid, edges are routed into gutter channels, and the build fails if a box overlaps or a line runs through a box</p>
+  </figure>
+  <script type="application/json" id="graph">{"edges": [{"a": "masters", "b": "load"}, {"a": "dumps", "b": "load"}, {"a": "load", "b": "lookups"}, {"a": "load", "b": "items"}, {"a": "load", "b": "txns"}, {"a": "lookups", "b": "index"}, {"a": "items", "b": "index"}, {"a": "txns", "b": "gate1"}, {"a": "index", "b": "gate1"}, {"a": "gate1", "b": "gate2"}, {"a": "gate2", "b": "gate3"}, {"a": "gate3", "b": "alloc"}, {"a": "alloc", "b": "explain"}, {"a": "explain", "b": "run"}, {"a": "run", "b": "csv"}, {"a": "csv", "b": "score"}, {"a": "score", "b": "ship"}, {"a": "gate3", "b": "documents"}, {"a": "explain", "b": "unwired"}], "loop": ["alloc", "index"]}</script>
+</section>
+
+<section class="sec" id="load">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">1</span>
+      <h2>Load and canonicalise</h2>
+      <span class="src"><b>src/bankrec/data.py</b> Phase · Masters · FX · to_cents</span>
+    </div>
+    <div class="sec-grid">
+    <div class="notes">
+      <div class="note note-inv"><dt>invariant</dt><dd>Money is an integer from <code>to_cents</code> onwards. That function is the only place a float exists, and the tolerance below it is <code>max(0.01, 0.5%)</code> in integer cents.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Bank lines are sorted by <code>(booking_date, bank_txn_id)</code> once, at load. PARTIAL, RETURNED and DUPLICATE_PAYMENT are properties of a moment, so order is part of the data model, not a convenience.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Every master-derived lookup is built in <code>Masters.__init__</code>: 17 category keywords, terms, IBAN owners, own accounts, party names. Nothing O(masters) runs inside the per-line loop.</dd></div>
+    </div>
+      <table class="tbl">
+        <caption>canonical item columns (one frame, four sources)</caption>
+        <thead><tr><th>column</th><th>type</th><th>meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">item_id</td><td>str</td><td>ARI/ARC/API/APC + year + sequence</td></tr>
+          <tr><td class="mono">side · kind</td><td>str</td><td>AR or AP, invoice or credit note</td></tr>
+          <tr><td class="mono">entity · party_id</td><td>str</td><td>who owes or is owed</td></tr>
+          <tr><td class="mono">document_number</td><td>str</td><td>the number that arrives mangled in the bank text</td></tr>
+          <tr><td class="mono">issue_date · due_date</td><td>str</td><td>YYYY-MM-DD, compared as integers for FX</td></tr>
+          <tr><td class="mono">currency</td><td>str</td><td>the item's currency, not the account's</td></tr>
+          <tr><td class="mono">total_cents · open_cents</td><td>int</td><td>integer cents; open is the mutable one</td></tr>
+          <tr><td class="mono">payment_terms</td><td>str</td><td>key into <code>Masters.terms</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="index">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">2</span>
+      <h2>Index the open items</h2>
+      <span class="src"><b>src/bankrec/matching.py</b> ItemIndex</span>
+    </div>
+    <div class="sec-grid">
+    <div class="notes">
+      <div class="note note-info"><dt>note</dt><dd>One pass over 65,846 items converts the polars frame into dicts. After that the per-line loop never touches a DataFrame: the candidate set is a handful of dict lookups.</dd></div>
+      <div class="note note-inv"><dt>invariant</dt><dd><code>open_cents</code> is the only mutable state. <code>settle()</code> decrements it, floors at zero, and patches the amount index with <code>bisect.insort</code> / delete. Nothing is rebuilt, so lookups stay logarithmic.</dd></div>
+      <div class="note note-fail"><dt>failure mode</dt><dd>Anything that batches lines out of order loses the exceptions that depend on sequence: a returned direct debit re-opens an item, and a second payment can only be duplicate because the first one closed the item.</dd></div>
+    </div>
+      <table class="tbl">
+        <caption>ItemIndex: built once, queried per line</caption>
+        <thead><tr><th>structure</th><th>key → value</th><th>changes</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">items</td><td>item_id → row dict</td><td class="acc">never</td></tr>
+          <tr><td class="mono">open</td><td>item_id → open cents</td><td class="live">every settle</td></tr>
+          <tr><td class="mono">by_ref</td><td>document variant → item ids</td><td class="acc">never</td></tr>
+          <tr><td class="mono">by_party</td><td>party id → item ids</td><td class="acc">never</td></tr>
+          <tr><td class="mono">party_by_token</td><td>name token → party ids</td><td class="acc">never</td></tr>
+          <tr><td class="mono">_by_amount</td><td>open cents → item ids, plus a sorted key list</td><td class="live">every settle</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="candidates">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">3</span>
+      <h2>Propose candidates</h2>
+      <span class="src"><b>src/bankrec/matching.py</b> Matcher.match</span>
+    </div>
+    <div class="sec-grid">
+    <div class="notes">
+      <div class="note note-info"><dt>note</dt><dd>Each gate asks the same question with weaker evidence. The order is a precision ranking, not a filter: a gate that finds items it cannot reconcile falls through instead of returning nothing, because a candidate that is never proposed can never be recovered.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Reference variants are generated per document number (leading zeros, digit core) and SEPA vocabulary is dropped, so <code>EREF/NOTPROVIDED/RECHNUNG</code> do not look like invoice numbers.</dd></div>
+      <div class="note note-fail"><dt>failure mode</dt><dd>Gate 1 returns only when the referenced items sum to the cash, so 1:N remittances reach gate 3 and usually fail there. Recall is 0.110 against precision 0.629: the missing points are all on the proposal side.</dd></div>
+    </div>
+      <table class="tbl">
+        <caption>gates, in precision order: first one that reconciles wins</caption>
+        <thead><tr><th>#</th><th>evidence</th><th>accepts</th><th>on miss</th></tr></thead>
+        <tbody>
+          <tr><td class="mono live">1</td><td>document reference in the text</td><td class="mono">all referenced items, if they sum to the cash</td><td>falls through</td></tr>
+          <tr><td class="mono live">2</td><td>counterparty IBAN, then name tokens + amount</td><td class="mono">one item</td><td>falls through</td></tr>
+          <tr><td class="mono live">3</td><td>amount unique across all open items</td><td class="mono">that item</td><td>no candidate</td></tr>
+          <tr><td class="mono dead">4</td><td>documents: advices, dd batches, settlements, runs</td><td class="mono dead">not loaded</td><td class="dead">declared only</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="allocate">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">4</span>
+      <h2>Allocate the cash</h2>
+      <span class="src"><b>src/bankrec/matching.py</b> Matcher._rows · _sum</span>
+    </div>
+    <div class="sec-grid">
+    <div class="notes">
+      <div class="note note-inv"><dt>invariant</dt><dd>Emission and settlement are one step: the rows returned to the writer are the rows the book already applied. That is why a later line sees the balance an earlier line left behind.</dd></div>
+      <div class="note note-fail"><dt>failure mode</dt><dd>The first gate settles the items before it checks the sum. A referenced set that does not add up falls through with its balances already reduced. Moving <code>settle</code> behind the decision is part of the same fix as the missing allocation logic.</dd></div>
+      <div class="note note-void"><dt>not built</dt><dd>Subset sum over the candidates, oldest-first FIFO for repeated identical amounts, credit note netting, and instalment chains. All of them are allocation changes, not candidate changes, which is why they belong to one function.</dd></div>
+    </div>
+      <div class="term">
+        <div class="term-top"><b>matching.py</b><span>shortened</span></div>
+        <pre><span class="o"># gate 1: propose, then check that the set explains the cash</span>
+rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</span>
+<span class="a">if</span> self._sum(rows, ccy, ymd) &lt;= cash + tol:
+    <span class="a">return</span> rows
+<span class="o"># else: fall through, balances already moved</span>
+
+<span class="o"># _rows: one Allocation per item, then mutate the book</span>
+<span class="a">for</span> row <span class="a">in</span> rows:
+    self.index.settle(row.item_id, row.cents)</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="explain">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">5</span>
+      <h2>Name the difference</h2>
+      <span class="src"><b>src/bankrec/rules.py</b> exception_for · category_for</span>
+    </div>
+    <div class="sec-grid">
+    <div class="notes">
+      <div class="note note-info"><dt>note</dt><dd>Two closed lists, one per row shape: an item row carries an exception, a no-item row carries a category. The server rejects the whole file for an unknown value, so both lists are constants and both are validated before upload.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Default is the empty code: a wrong code costs the whole transaction, a blank one only costs the code. <code>exception_for</code> is always called with a zero remainder, so its currency test is the only branch that can fire; the code does return OVERPAYMENT and PARTIAL, but nothing reaches it.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Categories are the fallback for lines that settle nothing: 3,203 of 3,317 no-item rows end in the sign default, so most of the category accuracy comes from a two-value guess, not from the keyword table.</dd></div>
+    </div>
+      <table class="tbl">
+        <caption>exception codes (closed list of 10)</caption>
+        <thead><tr><th>code</th><th>in code</th><th>emitted</th><th>why</th></tr></thead>
+        <tbody>
+          <tr><td class="mono live">FX_DIFFERENCE</td><td class="mono acc">yes</td><td class="n">21</td><td class="wrap">item and line currency differ and the item clears</td></tr>
+          <tr><td class="mono dead">PARTIAL</td><td class="mono acc">yes</td><td class="n">0</td><td class="wrap">allocation always applies the whole open amount, so the remainder is never positive</td></tr>
+          <tr><td class="mono dead">OVERPAYMENT</td><td class="mono acc">yes</td><td class="n">0</td><td class="wrap">same reason: applied is never above open</td></tr>
+          <tr><td class="mono dead">SHORT_DISCOUNT</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">needs payment terms and the three day grace window</td></tr>
+          <tr><td class="mono dead">SHORT_BANK_CHARGES</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">shortfall within 60 EUR and 2 percent of the item</td></tr>
+          <tr><td class="mono dead">SHORT_WITHHOLDING</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">10, 1.5 or 1.25 percent of the invoice total</td></tr>
+          <tr><td class="mono dead">SHORT_DISPUTE</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">needs the advice text, which is not parsed</td></tr>
+          <tr><td class="mono dead">DUPLICATE_PAYMENT</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">a book state, not a row property</td></tr>
+          <tr><td class="mono dead">UNIDENTIFIED</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">also a category; never used on an item row</td></tr>
+          <tr><td class="mono dead">RETURNED</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">re-opens an item that a collection already closed</td></tr>
+        </tbody>
+      </table>
+      <table class="tbl">
+        <caption>category cascade, first match wins</caption>
+        <thead><tr><th>order</th><th>test</th><th>result</th><th>rows</th></tr></thead>
+        <tbody>
+          <tr><td class="mono live">1</td><td>counterparty is one of our IBANs</td><td class="mono">INTERNAL_TRANSFER · INTERCOMPANY</td><td class="n">0</td></tr>
+          <tr><td class="mono live">2</td><td>folded text against 17 keyword families</td><td class="mono">one of 17 named categories</td><td class="n">114</td></tr>
+          <tr><td class="mono live">3</td><td>sign of the line</td><td class="mono">UNIDENTIFIED · BANK_FEES</td><td class="n">3,203</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="score">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">6</span>
+      <h2>Process, validate, evaluate</h2>
+      <span class="src"><b>src/bankrec/pipeline.py</b> process · evaluate.score_file</span>
+    </div>
+    <div class="sec-grid">
+    <div class="notes">
+      <div class="note note-inv"><dt>invariant</dt><dd>Every bank line appears exactly once, as item rows or as a single category row, and never as both. No duplicate <code>(bank_txn_id, item_id)</code>. <code>make validate</code> checks the same rules the server does, before any upload.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>The file is scored offline with the vendored scorer, so this number is the leaderboard's number, and the 65 segments below are the same slices it reports.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>The exception weight is worth 0.03 points because only 1 of 10 codes is ever emitted. Macro F1 averages over classes, not rows, so one rare code is worth as much as a segment with hundreds of lines.</dd></div>
+    </div>
+      <table class="tbl">
+        <caption>score 21.23 = 100 × (0.50 F1 + 0.30 accuracy + 0.20 macro F1)</caption>
+        <thead><tr><th>component</th><th>weight × value</th><th>points</th><th>share of its own maximum</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">allocation F1</td><td class="mono">0.50 × 0.1878</td><td class="n">9.39</td><td class="cell"><span class="bar" style="width:37.6%"></span></td></tr>
+          <tr><td class="mono">transaction accuracy</td><td class="mono">0.30 × 0.3939</td><td class="n">11.82</td><td class="cell"><span class="bar" style="width:39.4%"></span></td></tr>
+          <tr><td class="mono">exception macro F1</td><td class="mono">0.20 × 0.0013</td><td class="n">0.03</td><td class="cell"><span class="bar soft" style="width:0.4%"></span></td></tr>
+        </tbody>
+      </table>
+      <table class="tbl">
+        <caption>the only three row shapes the writer emits</caption>
+        <thead><tr><th>bank_txn_id</th><th>item_id</th><th>amount</th><th>category</th><th>exception</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">BT-2025-0001234</td><td class="mono">ARI-2025-0013456</td><td class="mono">1210.00</td><td class="dead">·</td><td class="dead">·</td></tr>
+          <tr><td class="mono">BT-2025-0001234</td><td class="mono">ARI-2025-0013456</td><td class="mono">1200.00</td><td class="dead">·</td><td class="mono live">FX_DIFFERENCE</td></tr>
+          <tr><td class="mono">BT-2025-0001240</td><td class="dead">·</td><td class="dead">·</td><td class="mono">BANK_FEES</td><td class="dead">·</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="ship">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">7</span>
+      <h2>Ship, after a human says so</h2>
+      <span class="src"><b>src/bankrec/cli.py</b> push · submit.submit · _gate · describe</span>
+    </div>
+    <div class="sec-grid flip">
+      <div class="term">
+        <div class="term-top"><b>real output</b><span>sample phase</span></div>
+        <pre><span class="p">$</span> make process PHASE=sample
+<span class="o">[sample] 8,499 bank lines, 65,846 items -&gt; builds/20261107-1048-35d1df3b-baseline.csv.gz</span>
+<span class="o">[sample] 8,499 lines -&gt; 6,252 item rows + 3,317 category rows</span>
+
+<span class="p">$</span> make evaluate PHASE=sample
+<span class="o">score  21.23 | alloc F1 0.1878 (P 0.6294 / R 0.1104)</span>
+<span class="o">9,569 rows over 8,499/8,499 lines</span>
+
+<span class="p">$</span> python -m bankrec whoami
+<span class="o">{"team": "...", "status": "..."}   # GET /api/me, uses no upload slot</span>
+
+<span class="p">$</span> make push PHASE=LIVE
+<span class="o">-- about to spend a LIVE submission ------------------------------</span>
+  phase            LIVE  (public leaderboard, repeatable)
+  rows             9,569
+  uncompressed     360 kB  (packed 85 kB)
+  sha256 (csv)     35d1df3b508d01631e949e879feee02cdbe2f9e022a2d94c3864aeee5f3402a7
+<span class="p">Type 'LIVE' to upload, anything else aborts:</span>
+<span class="o"># nothing was typed, so nothing was uploaded, and no slot was spent</span></pre>
+      </div>
+    <div class="notes">
+      <div class="note note-inv"><dt>invariant</dt><dd>No flag, no environment variable and no <code>--yes</code> skips the gate. Without a terminal it refuses before any HTTP call, so an agent or CI can build and validate but cannot spend the submission.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>The printed sha256 is of the decompressed CSV, because gzip embeds a timestamp: two identical files have different <code>.gz</code> hashes, so only the decompressed hash identifies what is being uploaded.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>FINAL is one scored submission per team, so its phrase is longer (<code>SUBMIT FINAL</code>) and the row count, size and limits are checked before the prompt, not after.</dd></div>
+    </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="levers">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="num">8</span>
+      <h2>Where the missing points are</h2>
+      <span class="src"><b>make score</b> per segment, sample phase</span>
+    </div>
+    <div class="sec-grid">
+    <div class="notes">
+      <div class="note note-info"><dt>note</dt><dd>36 of 65 segments still score zero, and they hold 2,217 of 8,499 lines. Every one of them is a missing branch, not a tuning problem: precision is already 0.629.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Add evidence, then measure. One branch per change, compared per segment, kept only if it moves the segment it targets without regressing the others.</dd></div>
+    </div>
+      <table class="tbl">
+        <caption>segments by lines, first 18 of 65</caption>
+        <thead><tr><th>segment</th><th>lines</th><th>accuracy</th><th>lines (bar)</th><th>what it needs</th></tr></thead>
+        <tbody>
+          <tr><td class="mono acc">ar_ref_noise</td><td class="n">2,155</td><td class="n">0.633</td><td class="cell"><span class="bar soft" style="width:100.0%"></span></td><td class="wrap">already covered: reference_tokens</td></tr>
+          <tr><td class="mono acc">ar_1to1</td><td class="n">927</td><td class="n">0.638</td><td class="cell"><span class="bar soft" style="width:43.0%"></span></td><td class="wrap">already covered: party gate</td></tr>
+          <tr><td class="mono mono">ap_payment_multi</td><td class="n">787</td><td class="n">0.057</td><td class="cell"><span class="bar" style="width:36.5%"></span></td><td class="wrap">expand payment_runs/</td></tr>
+          <tr><td class="mono mono">ap_payment_single</td><td class="n">458</td><td class="n">0.454</td><td class="cell"><span class="bar" style="width:21.3%"></span></td><td class="wrap">expand payment_runs/</td></tr>
+          <tr><td class="mono acc">nonitem_bank_fees</td><td class="n">437</td><td class="n">0.984</td><td class="cell"><span class="bar soft" style="width:20.3%"></span></td><td class="wrap">already covered: keyword table</td></tr>
+          <tr><td class="mono mono">ar_1toN_text</td><td class="n">349</td><td class="n">0.014</td><td class="cell"><span class="bar" style="width:16.2%"></span></td><td class="wrap">split the remittance text</td></tr>
+          <tr><td class="mono mono">ar_same_amount_fifo</td><td class="n">256</td><td class="n">0.504</td><td class="cell"><span class="bar" style="width:11.9%"></span></td><td class="wrap">oldest-first inside the party</td></tr>
+          <tr><td class="mono live">ar_short_discount</td><td class="n">218</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:10.1%"></span></td><td class="wrap">terms + 3 day grace</td></tr>
+          <tr><td class="mono live">ar_dd_returned</td><td class="n">202</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:9.4%"></span></td><td class="wrap">re-open on return</td></tr>
+          <tr><td class="mono live">ar_1toN_credit_note</td><td class="n">199</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:9.2%"></span></td><td class="wrap">net the credit note</td></tr>
+          <tr><td class="mono live">ar_instalment</td><td class="n">186</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:8.6%"></span></td><td class="wrap">PARTIAL across lines</td></tr>
+          <tr><td class="mono mono">ar_same_amount_month</td><td class="n">185</td><td class="n">0.595</td><td class="cell"><span class="bar" style="width:8.6%"></span></td><td class="wrap">already covered: unique amount</td></tr>
+          <tr><td class="mono live">ar_partial</td><td class="n">174</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:8.1%"></span></td><td class="wrap">emit PARTIAL at all</td></tr>
+          <tr><td class="mono live">unidentified</td><td class="n">152</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:7.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
+          <tr><td class="mono acc">ar_third_party_confirming</td><td class="n">132</td><td class="n">0.788</td><td class="cell"><span class="bar soft" style="width:6.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
+          <tr><td class="mono acc">ap_direct_debit</td><td class="n">131</td><td class="n">0.611</td><td class="cell"><span class="bar soft" style="width:6.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
+          <tr><td class="mono live">ar_n_to_m</td><td class="n">102</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:4.7%"></span></td><td class="wrap">subset sum</td></tr>
+          <tr><td class="mono acc">nonitem_bank_fees_intl</td><td class="n">99</td><td class="n">0.889</td><td class="cell"><span class="bar soft" style="width:4.6%"></span></td><td class="wrap">already covered: keyword table</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+</div>
+<footer class="foot">
+  <div class="foot-in">
+    <div>
+      <h2>generated, not written</h2>
+      <p>
+        <code>scripts/build_map.py</code> reads the closed lists from <code>schema.py</code>,
+        checks that every stage still points at a real function, verifies the diagram geometry,
+        and scores an existing submission for the numbers. Hand edits are overwritten:
+        <code>make map</code> rewrites this file, <code>make map-check</code> fails when it is
+        stale.
+      </p>
+    </div>
+    <dl>
+      <dt>numbers from</dt><dd><code>make process</code> + <code>make evaluate</code>, scored offline</dd>
+      <dt>diagram</dt><dd><code>scripts/map_diagram.py</code></dd>
+      <dt>styles</dt><dd><code>scripts/map_theme.css</code></dd>
+      <dt>contract</dt><dd><code>src/bankrec/schema.py</code>, <code>docs/POLICIES.md</code></dd>
+      <dt>decisions</dt><dd><code>CLAUDE.md</code></dd>
+    </dl>
+  </div>
+</footer>
+</main>
+
+<script>
+(() => {
+  // Hover a block: keep it and everything it reaches, in both directions. Dim the rest.
+  const data = JSON.parse(document.getElementById('graph').textContent);
+  const svg = document.querySelector('.fig svg');
+  if (!svg) return;
+  const out = new Map(), inc = new Map();
+  const link = (map, a, b) => { if (!map.has(a)) map.set(a, new Set()); map.get(a).add(b); };
+  data.edges.forEach(({ a, b }) => { link(out, a, b); link(inc, b, a); });
+  link(out, data.loop[0], data.loop[1]);
+
+  const nodes = new Map([...svg.querySelectorAll('.nd')].map(el => [el.dataset.node, el]));
+  const edges = [...svg.querySelectorAll('.ed')];
+
+  const walk = (map, start) => {
+    const seen = new Set([start]); const stack = [start];
+    while (stack.length) {
+      for (const next of (map.get(stack.pop()) || [])) {
+        if (!seen.has(next)) { seen.add(next); stack.push(next); }
+      }
+    }
+    return seen;
+  };
+
+  const clear = () => {
+    svg.classList.remove('trace');
+    svg.querySelectorAll('.on').forEach(el => el.classList.remove('on'));
+  };
+
+  svg.addEventListener('pointerover', (event) => {
+    const target = event.target.closest('.nd');
+    if (!target) return;
+    const id = target.dataset.node;
+    const keep = new Set([...walk(out, id), ...walk(inc, id)]);
+    clear();
+    svg.classList.add('trace');
+    for (const [node, el] of nodes) if (keep.has(node)) el.classList.add('on');
+    for (const edge of edges) {
+      const [a, b] = edge.dataset.edge.split('>');
+      if (keep.has(a) && keep.has(b)) edge.classList.add('on');
+    }
+  });
+  svg.addEventListener('pointerleave', clear);
+  svg.addEventListener('focusin', (event) => {
+    const target = event.target.closest('.nd');
+    if (target) target.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+  });
+  svg.addEventListener('focusout', clear);
+  addEventListener('keydown', (event) => { if (event.key === 'Escape') clear(); });
+})();
+</script>
+</body>
+</html>

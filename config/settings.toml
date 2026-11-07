@@ -2,9 +2,9 @@
 # you can read the rule next to the line that applies it.
 
 [paths]
-# Where scripts/download_data.sh extracts the archives.
-data_dir = "data/raw"
-submissions_dir = "submissions"
+# Where scripts/download_data.py puts archives/, masters/ and the phase dirs.
+data_dir = "data"
+builds_dir = "builds"
 
 [run]
 # sample | train | live | final

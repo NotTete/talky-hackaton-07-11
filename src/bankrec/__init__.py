@@ -11,7 +11,7 @@ a valid submission, score it locally. Grow it one rule at a time (see README.md)
     rules.py     <- the part to build: exception / category codes (POLICIES.md)
     pipeline.py  phase -> submission CSV
     evaluate.py  official scorer wrapper (vendor/bankrec_score.py)
-    submit.py    presigned S3 upload + leaderboard flow
+    submit.py    presigned S3 upload + leaderboard flow + the human confirmation gate
     cli.py       python -m bankrec run|score|validate|submit|doctor
 """
 

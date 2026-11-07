@@ -1,25 +1,33 @@
-"""Score a submission locally with the official scorer (vendor/bankrec_score.py).
+"""Two ways to judge a build.
 
-TRAIN and the 1-month sample have a golden, so this is the fastest feedback loop:
+* **score** — only TRAIN and the one-month sample have a golden. When one exists, run the
+  official scorer (`vendor/bankrec_score.py`) so the number is exactly the leaderboard's.
+* **coverage** — LIVE/FINAL have no labels, so all you can honestly measure is structure:
+  is every bank line covered, are rows unique, do codes belong to the closed lists.
 
-    python -m bankrec score submissions/submission_sample.csv.gz
-    python -m bankrec score submissions/submission_train.csv.gz --phase train
-
-The numbers are exactly what the leaderboard will show (same code, same weights).
+Keeping them separate is deliberate: reporting a "score" for an unlabelled phase would be
+a lie, and this repo is small enough that one misleading number would poison every
+decision that follows.
 """
 
 from __future__ import annotations
 
+import csv
+import gzip
 import importlib.util
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from .builds import Build
 from .config import ROOT, Settings, load_settings
 from .data import Phase
-from .schema import CATEGORIES, EXCEPTIONS
+from .schema import CATEGORIES, EXCEPTIONS, SUBMISSION_COLUMNS, validate_row
 
 SCORER_PATH = ROOT / "vendor" / "bankrec_score.py"
+
+
+# --------------------------------------------------------------------- scoring
 
 
 def _load_scorer():
@@ -35,15 +43,14 @@ def _load_scorer():
 class ScoreReport:
     ok: bool
     score: float | None
-    metrics: dict
-    segments: dict[str, dict]
-    errors: list[dict]
+    metrics: dict = field(default_factory=dict)
+    segments: dict[str, dict] = field(default_factory=dict)
+    errors: list[dict] = field(default_factory=list)
 
     def summary(self) -> str:
         if not self.ok:
             lines = [f"INVALID submission ({len(self.errors)} error(s)):"]
-            for err in self.errors[:20]:
-                lines.append(f"  row {err.get('row')}: {err.get('message')}")
+            lines += [f"  row {e.get('row')}: {e.get('message')}" for e in self.errors[:20]]
             return "\n".join(lines)
         m = self.metrics
         return (
@@ -62,7 +69,7 @@ def score_file(path: Path, settings: Settings | None = None, phase: str | None =
     if not golden_path.exists():
         raise FileNotFoundError(
             f"no golden for phase '{data.name}' (only TRAIN and the sample have labels); "
-            "validate LIVE/FINAL and submit instead"
+            "use the coverage report instead"
         )
     scorer = _load_scorer()
     golden = scorer.load_golden(
@@ -81,14 +88,153 @@ def score_file(path: Path, settings: Settings | None = None, phase: str | None =
     )
 
 
-def format_segments(report: ScoreReport, worst: int = 12) -> str:
-    if not report.ok or not report.segments:
+# -------------------------------------------------------------------- coverage
+
+
+@dataclass(slots=True)
+class CoverageReport:
+    rows: int = 0
+    lines: int = 0
+    item_rows: int = 0
+    no_item_rows: int = 0
+    total_lines: int = 0
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    @property
+    def coverage(self) -> float:
+        return self.lines / self.total_lines if self.total_lines else 0.0
+
+    def summary(self) -> str:
+        if not self.ok:
+            head = [f"INVALID ({len(self.errors)} problem(s)):"]
+            return "\n".join(head + [f"  {e}" for e in self.errors[:20]])
+        return (
+            f"{self.rows:,} rows | {self.item_rows:,} item + {self.no_item_rows:,} category | "
+            f"{self.lines:,}/{self.total_lines:,} bank lines covered ({self.coverage:.1%})"
+        )
+
+
+def _rows(path: Path):
+    magic = path.read_bytes()[:2]
+    if path.suffix == ".gz" or magic == b"\x1f\x8b":
+        if magic != b"\x1f\x8b":
+            raise ValueError(f"{path.name} ends in .gz but is not gzip")
+        with gzip.open(path, "rt", encoding="utf-8-sig", newline="") as fh:
+            yield from csv.reader(fh)
+    else:
+        with path.open(encoding="utf-8-sig", newline="") as fh:
+            yield from csv.reader(fh)
+
+
+def validate_file(path: Path, settings: Settings | None = None, phase: str | None = None) -> CoverageReport:
+    """Structural check a human would do by hand: this is what the server enforces."""
+    settings = settings or load_settings()
+    data = Phase(settings, phase or settings.phase)
+    txns = set(_column(data.dir / "bank_transactions.csv.gz", "bank_txn_id"))
+    report = CoverageReport(total_lines=len(txns))
+
+    seen_pairs: set[tuple[str, str]] = set()
+    item_lines: set[str] = set()
+    no_item_lines: set[str] = set()
+
+    reader = _rows(path)
+    header = [h.strip().lower() for h in next(reader, [])]
+    if header != SUBMISSION_COLUMNS:
+        report.errors.append(f"bad header {header}, expected {SUBMISSION_COLUMNS}")
+        return report
+
+    for lineno, cells in enumerate(reader, start=2):
+        if not cells or not any(cells):
+            continue
+        report.rows += 1
+        if len(cells) != 5:
+            report.errors.append(f"row {lineno}: expected 5 fields, got {len(cells)}")
+            continue
+        row = tuple(c.strip() for c in cells)
+        report.errors.extend(f"row {lineno}: {msg}" for msg in validate_row(row, txns))
+        txn, item = row[0], row[1]
+        if item:
+            if (txn, item) in seen_pairs:
+                report.errors.append(f"row {lineno}: duplicate ({txn}, {item})")
+            seen_pairs.add((txn, item))
+            item_lines.add(txn)
+            report.item_rows += 1
+        else:
+            if txn in no_item_lines:
+                report.errors.append(f"row {lineno}: two no-item rows for {txn}")
+            no_item_lines.add(txn)
+            report.no_item_rows += 1
+
+    for txn in sorted(item_lines & no_item_lines):
+        report.errors.append(f"{txn}: has both item rows and a category row")
+    report.lines = len(item_lines | no_item_lines)
+    return report
+
+
+def _column(path: Path, column: str) -> list[str]:
+    import polars as pl
+
+    return pl.read_csv(path, columns=[column], infer_schema_length=0)[column].to_list()
+
+
+# ------------------------------------------------------------------- dispatch
+
+
+def evaluate_build(build: Build, settings: Settings | None = None) -> tuple[ScoreReport | None, CoverageReport]:
+    """Score when a golden exists, otherwise report coverage. Never invents a score."""
+    settings = settings or load_settings()
+    data = Phase(settings, build.phase)
+    coverage = validate_file(build.file, settings, build.phase)
+    scored = None
+    if data.has_golden():
+        try:
+            scored = score_file(build.file, settings, build.phase)
+        except FileNotFoundError:
+            scored = None
+    return scored, coverage
+
+
+def metrics_for(build: Build, scored: ScoreReport | None, coverage: CoverageReport) -> dict:
+    """What goes into builds/index.json (and therefore into the push warning)."""
+    metrics: dict = {
+        "rows": coverage.rows,
+        "lines": coverage.lines,
+        "total_lines": coverage.total_lines,
+        "coverage": round(coverage.coverage, 6),
+        "item_rows": coverage.item_rows,
+        "no_item_rows": coverage.no_item_rows,
+        "valid": coverage.ok,
+    }
+    if scored is not None and scored.ok:
+        metrics.update({"score": scored.score, **scored.metrics})
+        metrics["segments"] = scored.segments
+    elif scored is not None:
+        metrics["valid"] = False
+        metrics["errors"] = scored.errors
+    return metrics
+
+
+def format_segments(metrics: dict, worst: int = 12) -> str:
+    segments = metrics.get("segments") or {}
+    if not segments:
         return ""
-    rows = sorted(report.segments.items(), key=lambda kv: kv[1]["accuracy"])
+    rows = sorted(segments.items(), key=lambda kv: kv[1]["accuracy"])
     out = ["lowest-accuracy segments (where to work next):"]
-    for name, info in rows[:worst]:
-        out.append(f"  {name:<28} n={info['n']:>7,}  acc={info['accuracy']:.3f}")
+    out += [f"  {name:<28} n={info['n']:>7,}  acc={info['accuracy']:.3f}" for name, info in rows[:worst]]
     return "\n".join(out)
 
 
-__all__ = ["ScoreReport", "score_file", "format_segments", "json"]
+__all__ = [
+    "CoverageReport",
+    "ScoreReport",
+    "evaluate_build",
+    "format_segments",
+    "metrics_for",
+    "score_file",
+    "validate_file",
+    "json",
+]

@@ -230,12 +230,19 @@ devenv.local.yaml
 # pre-commit
 .pre-commit-config.yaml
 
-# Hackathon data + generated submissions
-/data/raw/*
-!/data/raw/.gitkeep
+# Hackathon data + generated submissions (see data/README.md)
+/data/archives/
+/data/masters/
+/data/sample/
+/data/train/
+/data/train-lite/
+/data/live/
+/data/final/
+/data/.tmp/
+/data/manifest.json
 /data/interim/*
 !/data/interim/.gitkeep
 /data/processed/*
 !/data/processed/.gitkeep
-/submissions/*
-!/submissions/.gitkeep
+/data/raw/
+/builds/
