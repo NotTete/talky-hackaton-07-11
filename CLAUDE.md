@@ -378,64 +378,13 @@ intentional trade-off into a test failure. Add tests where a mistake is *invisib
    if it improves; TRAIN before LIVE, LIVE before FINAL.
 9. **A human confirms every upload.** `submit()` asks the operator to type the phase on a
    real terminal and refuses without one; never add a bypass flag (§15.1).
-10. **The map is generated.** Never hand-edit `pipeline-map.html`; change
-   `scripts/build_map.py` (or the CSS) and run `make map` (§21).
 
 ## 20. How to tell an increment is done
 
 Not "it looks right". It is done when:
 
-- `make score` improved (or a specific segment did, without regressing others),
+- `make ratchet` passes (score or a named segment improved, none dropped; `make ratchet-update` if the output is meant to move),
 - `make validate` still passes,
 - `pytest` still passes,
 - the change is explainable by a sentence in `docs/POLICIES.md`,
-- `make map` was re-run if you touched a stage (the page is checked in),
 - and the README still describes the code (if you added a file, say why in the tree).
-
-## 21. Why the pipeline map is generated, not written
-
-`pipeline-map.html` is the one document whose whole job is to be *true*: seven stages, the
-function behind each of them, and the numbers the scorer currently reports. A hand-written
-version of that starts lying the first time someone edits `alt/engine.py`, and a map that lies
-is worse than no map, because it is the first thing a new contributor (or an agent) reads.
-So `scripts/build_map.py` produces it, and nothing on it is typed by hand:
-
-| what the sheet says | where it comes from |
-|---|---|
-| closed lists, weights, limits, the tolerance | `import bankrec.schema` (no copy, no paraphrase of the values) |
-| which codes are reachable, whether `PARTIAL` can fire | an AST scan of `rules.exception_for` |
-| rows, score, per-segment accuracy, emitted codes | scoring an existing submission with the vendored scorer |
-| the blocks, their flows, and the state loop | `scripts/map_diagram.py`, drawn from a node table and an edge table |
-| which file implements each stage | `STAGES` in the generator, every symbol imported first |
-| styling | `scripts/map_theme.css`, a real stylesheet, inlined at build time |
-
-The page is a **schematic plus reference notes**, not a narrative: one block diagram
-(`fig. 1`), then one short section per stage with the rule, the file, and the numbers.
-Three consequences worth keeping:
-
-- **A renamed function fails the build, not the docs.** `verify_stages()` imports every symbol
-a stage claims; if `Engine._rows_from_docs` disappears the generator exits with the list of missing
-references. That is the cheapest possible guard against documentation drift.
-- **Missing data means no numbers, never zero numbers.** With no submission to score, the
-page says so in the affected sections. It never prints `0.00` as if it had measured it
-(a number you did not measure is a lie with a decimal point).
-- **The diagram is routed, not drawn by eye.** Blocks sit on a 6x6 grid; `Route` picks a
-channel inside each gutter (fewest crossings, never through a box, never sharing a lane with
-another edge), and `check()` raises if two boxes overlap, if a label overflows its box, or if
-text is longer than the box can hold. Editing the graph is a change to two lists, and the
-build tells you when it got ugly. There is no JS graph library: a fixed grid plus a router is
-smaller, deterministic, works offline, and renders without JavaScript.
-
-`make map-check` compares the committed file with a fresh render and fails when they differ.
-That is a *workflow* step after a scoring change, not a CI gate: the numbers move whenever
-the pipeline or the data does, and a red build for that would train people to ignore it.
-`pytest` keeps the data-free invariants instead (stages resolve, render is deterministic, no
-em dash), so a broken generator is still caught on every run.
-
-Serve mode (`make map-serve`) rebuilds on save and reloads the browser. It is deliberately
-stdlib-only (`http.server` + a file-mtime watcher + a 900 ms `/__rev` poll) because the
-value is the loop, not the tooling: edit a rule, look at the stage it belongs to, decide.
-
-The only client JS is the trace: hovering (or tabbing to) a block keeps that block and
-everything reachable from it, in both directions, and dims the rest. That is the cheapest
-way to answer "what does this feed, and what feeds it" without a paragraph of prose.

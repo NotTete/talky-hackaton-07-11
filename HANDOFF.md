@@ -144,7 +144,6 @@ Housekeeping that carries no score risk:
 - `make score` improved (or a named segment did, with no regression elsewhere);
 - `bankrec validate` still passes, `pytest` still passes;
 - the change is explainable by one sentence in `docs/POLICIES.md`;
-- `make map` re-run if a stage moved (the page is checked in);
 - README still describes the code.
 
 Start by running `bankrec doctor`, `pytest -q` and `bankrec builds`; then pick item 1 in §5.
