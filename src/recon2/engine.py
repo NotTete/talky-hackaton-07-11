@@ -228,7 +228,8 @@ class Engine:
         self.parties = None
         if party is not None:
             try:
-                aliases = ROOT / "artifacts" / "aliases.json"
+                # RECON2_ALIASES lets the sample be scored with a holdout (<=2024-12) alias table.
+                aliases = Path(os.environ.get("RECON2_ALIASES", ROOT / "artifacts" / "aliases.json"))
                 self.parties = party.Parties(ph.masters, aliases if aliases.exists() else None, notices)
             except Exception as ex:
                 STATUS["party"] = f"stub (Parties: {type(ex).__name__}: {ex})"
