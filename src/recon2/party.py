@@ -174,6 +174,37 @@ class Parties:
         if aliases and Path(aliases).exists():
             a = json.loads(Path(aliases).read_text())
             self.id8, self.alias = a.get("id8", {}), a.get("name", {})
+        self.boot: dict[tuple[str, str], list[str]] = {}
+        self._bc: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    # ---- same-phase payer bootstrap (no golden): strong evidence -> payer string -> party ---------
+    def payer_keys(self, line: Line) -> list[str]:
+        t, r = self.views(line)
+        if self.third_party(line) or any(a in t + r for a in AGENCIES + FACTORS):
+            return []
+        keys = []
+        for _, s in self._payer_strings(t, r, fold(line.cpty_name)):
+            k = " ".join(name_tokens(s))
+            if len(k) >= 3 and k not in keys:
+                keys.append(k)
+        for m in re.finditer(r"ACH CREDIT (.+?) (?:CCD|PPD|CTX)\b", t):
+            k = " ".join(name_tokens(m.group(1)))
+            if len(k) >= 3 and k not in keys:
+                keys.append(k)
+        return keys
+
+    def boot_learn(self, line: Line, pid: str) -> None:
+        for k in self.payer_keys(line):
+            self._bc[(line.entity, k)][pid] += 1
+
+    def boot_finish(self, min_hits: int = 2, purity: float = 0.9) -> int:
+        for key, c in sorted(self._bc.items()):
+            tot = sum(c.values())
+            pid, n = max(sorted(c.items()), key=lambda x: x[1])
+            if tot >= min_hits and n >= purity * tot:
+                self.boot[key] = [pid]
+        self._bc = defaultdict(lambda: defaultdict(int))
+        return len(self.boot)
 
     # ---- helpers -------------------------------------------------------------------------------
     def _scope(self, line: Line, side: str) -> tuple[str, ...]:
@@ -270,6 +301,10 @@ class Parties:
                 add(self.alias[key], "alias")
             pre = idx.prefix(s, ents)
             add(pre if pre else idx.lookup(s, ents), src)
+        if not res and self.boot:
+            for k in self.payer_keys(line):
+                for e in ents:
+                    add(self.boot.get((e, k), ()), "boot")
         if not res:
             add(idx.lookup(t, ents), "name")
         return self._expand(res, side, ents)

@@ -282,9 +282,24 @@ class Ops:
             return [r for r in op.rows if r.group == grp] if op.groups.get(grp) == cash else None
         if op.total == cash:
             return op.rows
+        if op.kind == "run" and line is not None and self._fx_total(op, line, cash, want):
+            return op.rows            # mixed-currency run debited whole, converted at the bank's rate
         if op.kind == "run":
             keys = sorted(op.groups)
-            pick = _subset([op.groups[k] for k in keys], cash, want if 0 < want < len(keys) else 0, op.oid.startswith("CF"))
+            w = want if 0 < want < len(keys) else 0
+            pick = _subset([op.groups[k] for k in keys], cash, w, op.oid.startswith("CF"))
+            if pick is None and line is not None and book is not None and len(keys) > 8:
+                # earlier slices already settled most groups: only groups whose items are still open can be in this one
+                for need_all in (True, False):
+                    live = [k for k in keys if self._group_open(op, k, line, book, need_all)]
+                    if 0 < len(live) < len(keys):
+                        if sum(op.groups[k] for k in live) == cash and (not w or w == len(live)):
+                            sub = list(range(len(live)))     # last slice: whatever is still open
+                        else:
+                            sub = _subset([op.groups[k] for k in live], cash, w, True)
+                        if sub is not None:
+                            pick, keys = sub, live
+                            break
             if pick is None:
                 return None
             chosen = {keys[i] for i in pick}
@@ -294,6 +309,32 @@ class Ops:
             if pick is not None:
                 return [op.rows[i] for i in pick]
         return None
+
+    def _fx_total(self, op: Op, line: Line, cash: int, want: int) -> bool:
+        """Run whose groups are in several currencies; the account debit is their sum in the account
+        currency.  Needs the group count named in the text, or a tight band (spread <= 3 %)."""
+        ccys = {}
+        for r in op.rows:
+            ccys.setdefault(r.group, r.party.get("ccy", ""))
+        if not line.ccy or all(c in ("", line.ccy) for c in ccys.values()):
+            return False
+        fx = getattr(getattr(self.phase, "masters", None), "fx", None)
+        if fx is None:
+            return False
+        tot = 0
+        try:
+            for g, a in op.groups.items():
+                tot += fx.convert(a, ccys[g] or line.ccy, line.ccy, op.day)
+        except KeyError:
+            return False
+        if want and want != len(op.groups):
+            return False
+        band = 0.03 if want else 0.01
+        return abs(tot - cash) <= band * cash
+
+    def _group_open(self, op: Op, grp: str, line: Line, book, need_all: bool) -> bool:
+        ok = [self.row_item(op, r, line, book, set()) is not None for r in op.rows if r.group == grp]
+        return bool(ok) and (all(ok) if need_all else any(ok))
 
     def _hyp(self, op: Op, rows: list[Row], line: Line, book) -> Hyp | None:
         items, cn, adv, used, missing = [], [], {}, set(), 0

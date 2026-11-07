@@ -453,6 +453,13 @@ class Engine:
         t = time.perf_counter()
         lines = self.phase.lines
         n = len(lines)
+        if self.parties is not None and os.environ.get("RECON2_BOOT", "1") != "0":
+            tb = time.perf_counter()
+            try:
+                self._bootstrap(lines)
+            except Exception as ex:
+                print(f"[recon2] bootstrap skipped: {type(ex).__name__}: {ex}", file=sys.stderr, flush=True)
+            self.timings["boot"] = time.perf_counter() - tb
         every = int(os.environ.get("RECON2_PROGRESS", "5000"))
         out: list[Decision] = []
         last, slow = t, []
@@ -475,6 +482,29 @@ class Engine:
             print(f"[recon2] {len(slow)} slow lines, worst {max(slow)[0]:.1f}s", file=sys.stderr, flush=True)
         self.check_errors(n)
         return out
+
+    def _bootstrap(self, lines) -> None:
+        """Pass 1: payer string -> party learned from lines whose party is certain in THIS phase
+        (iban/id8 hit on one party, or exact reference tokens naming one party's items)."""
+        P = self.parties
+        for ln in lines:
+            if ln.cash == 0:
+                continue
+            side = "AR" if ln.cash > 0 else "AP"
+            ps = P.resolve(ln, side)
+            pid = None
+            strong = {p for p, s in ps if s in ("iban", "id8")}
+            if len(strong) == 1:
+                pid = next(iter(strong))
+            elif not ps and not P.third_party(ln):
+                items, tier = self.res.named(ln, set(), {})
+                owners = {self.book.items[i].party_id for i in items}
+                if tier == 2 and len(owners) == 1:
+                    pid = next(iter(owners))
+            if pid:
+                P.boot_learn(ln, pid)
+        n = P.boot_finish()
+        print(f"[recon2] bootstrap: {n} payer strings", file=sys.stderr, flush=True)
 
     def check_errors(self, n: int) -> None:
         tot = sum(self.errors.values())

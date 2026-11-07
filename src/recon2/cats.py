@@ -26,6 +26,8 @@ _REFUND = re.compile(r"REFUND|DEVOLUCION PAGO|DUPLICAD|PAGO DOBLE|DOUBLE PAYMENT
                      r"ERSTATTUNG|RIMBORSO|DOPPELZAHLUNG|PAIEMENT DOUBLE|SALDO A FAVOR")
 _SREFUND = re.compile(r"REEMBOLSO|ABONO PAGO|DEVOLUCION SALDO|GUTSCHRIFT|AVOIR|RESTITUZIONE|REIMBURSEMENT")
 _PAYREF = re.compile(r"\bFRAS?\b|\bFAC|CONFIRMING|BULK PAYMENT|\bPR\d{8,}|\bFV[- ]?\d")
+_RUNMARK = re.compile(r"CONFIRMING|REMESA CF\d|\bCF\d{10}|\bPR\d{10}")
+_TREAS = {"CASH_POOL", "INTERNAL_TRANSFER", "FX_DEAL", "INTERCOMPANY"}
 _INTEREST =re.compile(r"LIQUIDACION INTERESES|INTERES(?:ES)? |INTEREST|ZINSEN|INTERETS|INTERESSI")
 
 
@@ -98,6 +100,8 @@ class Router:
         for lv, k, ms in zip(self._maj, line_keys(line), MIN_SUPPORT):
             m = lv.get(k)
             if m and m[0] and m[1] >= ms:
+                if m[0] in _TREAS and _RUNMARK.search(v):   # payment-run debit: never a treasury move
+                    continue
                 if m[0] == "CUSTOMER_REFUND" and _PAYREF.search(v):   # payment run / invoice refs: not a refund
                     continue
                 return m[0]
