@@ -1,7 +1,7 @@
 # recon2 — design v3 (accepted by the panel, 2026-11-07)
 
 Outcome of a 2-round debate (ARCHITECT, ACCOUNTANT, TREASURY, DOCS, REDTEAM, VERIFIER).
-Every rule below carries its TRAIN evidence. Raw evidence files: `$CLAUDE_JOB_DIR/tmp/*.md`
+Every rule below carries its TRAIN evidence. Raw evidence files: `docs/recon2/debate/`
 (findings_*, brief_*, r1_*, r2_*, verify_batch1). Fallback engine = `bankrec.alt` (sample 78.65).
 
 ## 0. Contract
@@ -130,7 +130,7 @@ EXTRA_FROM / WRONG_CAT / ITEM_EXPECTED) ranked by points lost with 3 examples ea
 ## 7. Dev loop (fast)
 * `python -m recon2 run --phase sample` end-to-end (8.5k lines, target < 60 s) + vendored scorer.
 * Oracle harness `python -m recon2.dev.oracle` on the VERIFIER sample
-  (`$CLAUDE_JOB_DIR/tmp/verifier/`, 16k lines stratified ≥50/segment, true open balances) → decide()
+  (a stratified TRAIN sample, 16k lines stratified ≥50/segment, true open balances) → decide()
   confusion per exception class in < 5 s; resolver P/R per segment.
 * Sample has no ES00/treasury/BR-MX-MA: check those segments on the oracle sample.
 

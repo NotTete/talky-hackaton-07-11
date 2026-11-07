@@ -1,0 +1,9 @@
+# VERIFIER batch 1 (full TRAIN, <=2s each). Scripts tmp/verifier/b1.py b2.py. Parsed CSV advice rows cached: tmp/verifier/adv_csv.parquet (633,334 rows: file, entity, received_date, payment_ref, payment_date, currency, doc, gross_c, ded_c, paid_c, reason).
+H1 Advice reason "RET" (CSV): only BR01, 18,364 rows, golden SHORT_WITHHOLDING 18,364/18,364; deduction −10% gross; golden amount = GROSS (100%). Retention elsewhere untestable from CSV (MA/MX WHT and retention may be in pdf/txt/xlsx advices, unparsed).
+H2 AR DUP lines (4,436): only 1 (0.02%) has another never-paid same-party ARI with total==|cash| -> 99.98% no alternative. (part-paid remainders not counted)
+H3 instalment n = round(total/first_piece): fully-paid items 9,646: 100.00% correct, always 2..6 (all items 89.8%, rest still open at TRAIN end).
+H4 n_to_m single-PARTIAL (6,937 lines, median 4 items): latest issue/due 59%; largest open 28.7%; oldest 15.9%; LAST DOC IN BANK TEXT 99.15% but only on 2,366 lines (34%) where all doc suffixes found in text+remittance_info. PARTIAL row golden/total median 0.50.
+H5 SBC: pool 1-item ARI first payments same ccy 0<short<=3.2% total, not ±1c of 1/2/3%: n=6,531. customer.country != entity.country -> 1,128/1,128 SBC (100% precision); same country 0/5,403 (4,758 SW, 645 none). Recall 1,128/1,130 of all SBC.
+H6 After RETURNED (30,358 rows; 23,796 = 78.4% re-paid): within 35 days 100% (median 17, p90 26); 13,235 re-payments are DD batches, 7,488 ar_dd_represented_transfer; re-paid item = party's oldest open ARI only 22.1% -> FIFO fails; look up reopened item.
+H7 Advices: 18,887/18,889 CSV advices link to a line. booking_date == advice payment_date 100%; received_date == booking only 26.9% (received−payment −2..+8, median +1). Link on payment_date; received only as ±8d window.
+Data: 3,068 CSV advice files use ";" separator (ES01 2,700, MX01 294, ES02 74).

@@ -1,0 +1,19 @@
+# ROUND 1 — DOCS critique of v1: ACCEPT-WITH-CHANGES
+BLOCKERS
+B1 Do NOT reuse bankrec/pdf/* or pdf_facts.jsonl: LIVE recall retention 155/916, advance 49/276, service_month 102/565, rappel offset 193/940, payout 0/409, scn offset 188/884, replaces 1009/1694 (62 WRONG doc; FT25-01-18900 -> FT25-01; pure digits skipped), bank_account_notice 0/79, cancel CN no anchor. Clause amount regex comma-only ("2,328.37"->232c); instalment plans empty 1308/1308. Decisive: 100% PDF coverage in ar_instalment (33,008 rows), ar_retention (6,643), ar_retention_release (4,145), ar_advance_deduction (2,003), ar_credit_note_paid_out (325).
+B2 Do NOT reuse alt/advice.py verbatim: txt ref 67/73 (needs >=8 digits), txt total==Σpaid 63/73; xlsx payment_ref never read; Sep-2025 xlsx layout (North Arden US01, Gray & Cox UK01) "Voucher | Invoice | PO | Inv. date | Amount | Deduction | Net paid" -> VCHR becomes doc, gross=430166 SILENT garbage; txt header US date mm/dd misread. VERIFY whether architect's 96.5% same-day used index or parsed date.
+B3 n43 wraps at 38 chars; " | " is a wrap point not a field separator (85,528 fragments exactly 38 chars; 273k/317k n43 lines multi-fragment). "TRANSFERENCIA A DOMINGUEZ Y REDONDO JA | RDINES S | DEVOLUCION PAGO DUPLICADO FV22-0118". Need joined view (glue when fragment==38) + raw tokens. ref2 <=16.
+MAJOR
+M1 Router purity (fmt,bank,code,subcode,sign) 0.9716 over 245 groups; code+sub+sign 0.971. Big groups are ITEM vs UNIDENTIFIED mixes (camt HPNB PMNT/RCDT/ESCT credit 95.6% ITEM / 4.1% UNIDENTIFIED) -> codes can't separate UNIDENTIFIED. Category-only purity 0.9735; impure HPNB credit CUSTOMER_ADVANCE 707 vs SUPPLIER_REFUND 109. Router = category classifier given no item; do NOT let ROUTER_SAYS_CATEGORY veto T3-T5 on credit transfer codes.
+M2 MONC camt drift 2025-10 -> back-off bank-agnostic (fmt,code,sign) + text templates.
+M3 Advice totals Σrow paid incl negative CN rows; cross-check stated total; mismatches = parse-quality signal.
+M4 Truncated advice invoice refs: suffix within payer open items only.
+M5 PDF join key supplier docs (entity, supplier_id from filename API_<SUP>_…, document_number).
+MINOR parse_amount("2.358") -> 236c (assert 2 decimals). Take docno/date from index.csv. Bank notices carry mandate + direction (DD collection target vs payer IBAN) -> iban->party with effective date.
+COUNTER-PROPOSALS
+C1 recon2/io/money.py single money() (last [.,] + exactly 2 digits = decimal; tests "1 076,45","1.299,28","2,328.37","25 366,13","1.023.706,29","7 629 426,81","-231.15").
+C2 recon2/io/pdfclauses.py closed EN+ES regex table on wrap-joined text; families instalments/retention/advance/replaces/service_month/rappel(dir)/scn/cancel_cn/assignment/iban_change/proforma. Acceptance: LIVE counts 1308/916/276/1694/565/940+409/884+510/352/1497/79+79; Σinstalments==total ±1c; retention+payable==total ±1c; replaced doc exists >=99%. sha cache; full LIVE 22s.
+C3 recon2/io/advices.py header-driven synonyms (document|documento|invoice|voucher; ...; paid|pagado|net paid; your_order|po); invoice beats voucher (voucher alias); payment_ref from csv meta / xlsx B2 / pdf label / txt Subject last token; header date by language. Acceptance on 6,889 LIVE + sample: rows==raw, Σpaid==stated, ref 100%, yield table per payer/month. New reason ADVICE_ROW_UNRESOLVED.
+C4 LineFacts text views: t_join (glue 38-char fragments), t_tokens, MT940 :86: subfields, camt remittance_info+counterparty_name. Test "REDONDO JA | RDINES" -> party.
+C5 Extractors have own unit acceptance (seconds); freeze facts.parquet / advice_rows.parquet with content hash so engine loop never re-parses.
+VERIFY V-a 96.5% basis; V-b text-template router purity on category lines + MONC coverage; V-c new-layout "430166" == last 6 digits >=99%; V-d MT940 subfields + truncation freq; V-e raw statements extra fields (low).
