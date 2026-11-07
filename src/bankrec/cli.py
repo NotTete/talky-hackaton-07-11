@@ -81,12 +81,19 @@ def _resolve(builds: Builds, ref: str | None, phase: str | None) -> Build:
 
 
 def cmd_process(args) -> int:
-    build = process(_settings(args), args.phase, limit=args.limit, name=args.name)
+    hooks = []
+    if args.trace:
+        from .hooks import TraceRecorder
+
+        hooks.append(TraceRecorder(_settings(args).builds_dir))
+    build = process(_settings(args), args.phase, limit=args.limit, name=args.name, hooks=hooks)
     print(f"build   {build.id}")
     print(f"file    {build.path}")
     print(f"sha256  {build.sha256}")
     print(f"rows    {build.rows:,} ({build.item_rows:,} item + {build.no_item_rows:,} category)")
-    print("\nnext:   bankrec evaluate " + build.id)
+    if build.trace:
+        print(f"trace   {build.trace}")
+    print("\nnext:   bankrec evaluate " + build.id + (" --explain" if build.trace else ""))
     return 0
 
 
@@ -108,6 +115,13 @@ def cmd_evaluate(args) -> int:
             print(coverage.summary())
         if report := format_segments(metrics):
             print(report)
+        if args.explain and scored.ok:
+            from .insights import diagnose, render
+
+            insight = diagnose(build, settings, examples=max(args.examples, 0), metrics=metrics)
+            metrics["diagnosis"] = insight.as_metrics()
+            print()
+            print(render(insight, examples=max(args.examples, 0)))
     else:
         print(f"no golden for '{build.phase}' — coverage only:")
         print(coverage.summary())
@@ -280,10 +294,13 @@ def build_parser() -> argparse.ArgumentParser:
     _common(p)
     p.add_argument("--name", default="", help="optional label appended to the build id")
     p.add_argument("--limit", type=int, default=0, help="only the first N bank lines (dev)")
+    p.add_argument("--trace", action="store_true", help="record which rule fired per line (evaluate --explain reads it)")
     p.set_defaults(func=cmd_process)
 
     p = sub.add_parser("evaluate", aliases=["score"], help="score / coverage-check a build")
     p.add_argument("build", nargs="?", help="build id or file (default: latest for the phase)")
+    p.add_argument("--explain", action="store_true", help="plain-English report: where the lines and pairs are lost")
+    p.add_argument("--examples", type=int, default=3, help="example lines per failure kind with --explain")
     _common(p)
     p.set_defaults(func=cmd_evaluate)
 

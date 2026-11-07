@@ -265,10 +265,10 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
 <dl class="spec">
     <div><dt>phase</dt><dd>sample</dd></div>
     <div><dt>bank lines</dt><dd>8,499</dd></div>
-    <div><dt>rows out</dt><dd>9,569<small>6,252 item · 3,317 cat</small></dd></div>
-    <div><dt>score</dt><dd>21.23<small>of 100</small></dd></div>
-    <div><dt>precision / recall</dt><dd>0.629<small>0.110</small></dd></div>
-    <div><dt>csv sha256</dt><dd>35d1df3b508d<small>360 kB</small></dd></div>
+    <div><dt>rows out</dt><dd>20,536<small>18,281 item · 2,255 cat</small></dd></div>
+    <div><dt>score</dt><dd>39.55<small>of 100</small></dd></div>
+    <div><dt>precision / recall</dt><dd>0.723<small>0.371</small></dd></div>
+    <div><dt>csv sha256</dt><dd>f43c1f647788<small>835 kB</small></dd></div>
   </dl>
 
 <section class="figwrap" aria-label="Pipeline diagram">
@@ -535,7 +535,7 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
     <div class="notes">
       <div class="note note-info"><dt>note</dt><dd>Each gate asks the same question with weaker evidence. The order is a precision ranking, not a filter: a gate that finds items it cannot reconcile falls through instead of returning nothing, because a candidate that is never proposed can never be recovered.</dd></div>
       <div class="note note-info"><dt>note</dt><dd>Reference variants are generated per document number (leading zeros, digit core) and SEPA vocabulary is dropped, so <code>EREF/NOTPROVIDED/RECHNUNG</code> do not look like invoice numbers.</dd></div>
-      <div class="note note-fail"><dt>failure mode</dt><dd>Gate 1 returns only when the referenced items sum to the cash, so 1:N remittances reach gate 3 and usually fail there. Recall is 0.110 against precision 0.629: the missing points are all on the proposal side.</dd></div>
+      <div class="note note-fail"><dt>failure mode</dt><dd>Gate 1 returns only when the referenced items sum to the cash, so 1:N remittances reach gate 3 and usually fail there. Recall is 0.371 against precision 0.723: the missing points are all on the proposal side.</dd></div>
     </div>
       <table class="tbl">
         <caption>gates, in precision order: first one that reconciles wins</caption>
@@ -560,21 +560,24 @@ code,pre{font-family:var(--mono);font-size:.94em;color:var(--ink)}
     </div>
     <div class="sec-grid">
     <div class="notes">
-      <div class="note note-inv"><dt>invariant</dt><dd>Emission and settlement are one step: the rows returned to the writer are the rows the book already applied. That is why a later line sees the balance an earlier line left behind.</dd></div>
-      <div class="note note-fail"><dt>failure mode</dt><dd>The first gate settles the items before it checks the sum. A referenced set that does not add up falls through with its balances already reduced. Moving <code>settle</code> behind the decision is part of the same fix as the missing allocation logic.</dd></div>
+      <div class="note note-inv"><dt>invariant</dt><dd>Emission and settlement are the same step everywhere except gate 1: a caller that already knows its candidate is right (unique amount, a group entry, an advice line) settles inside <code>_rows</code>, so a later line sees the balance this one left behind.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Gate 1 is the one place a candidate set can be wrong (a reference that does not sum to the cash), so it alone defers: <code>_rows(..., settle=False)</code> builds the rows, the sum check decides, and only <code>_commit</code> touches the book. A referenced set that does not add up now falls through with every balance untouched.</dd></div>
       <div class="note note-void"><dt>not built</dt><dd>Subset sum over the candidates, oldest-first FIFO for repeated identical amounts, credit note netting, and instalment chains. All of them are allocation changes, not candidate changes, which is why they belong to one function.</dd></div>
     </div>
       <div class="term">
         <div class="term-top"><b>matching.py</b><span>shortened</span></div>
-        <pre><span class="o"># gate 1: propose, then check that the set explains the cash</span>
-rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</span>
+        <pre><span class="o"># gate 1: propose, check the sum, only then touch the book</span>
+rows = self._rows(txn, referenced, settle=False)
 <span class="a">if</span> self._sum(rows, ccy, ymd) &lt;= cash + tol:
+    self._commit(rows)              <span class="o"># now the balances move</span>
     <span class="a">return</span> rows
-<span class="o"># else: fall through, balances already moved</span>
+<span class="o"># else: nothing was settled, items stay open for later branches</span>
 
-<span class="o"># _rows: one Allocation per item, then mutate the book</span>
-<span class="a">for</span> row <span class="a">in</span> rows:
-    self.index.settle(row.item_id, row.cents)</pre>
+<span class="o"># _rows(settle=True) is the default: every other caller still emits</span>
+<span class="o"># AND settles in one step, because they never need to undo a guess</span>
+<span class="a">def</span> _commit(self, rows):
+    <span class="a">for</span> row <span class="a">in</span> rows:
+        self.index.settle(row.item_id, row.cents)</pre>
       </div>
     </div>
   </div>
@@ -590,20 +593,20 @@ rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</spa
     <div class="sec-grid">
     <div class="notes">
       <div class="note note-info"><dt>note</dt><dd>Two closed lists, one per row shape: an item row carries an exception, a no-item row carries a category. The server rejects the whole file for an unknown value, so both lists are constants and both are validated before upload.</dd></div>
-      <div class="note note-info"><dt>note</dt><dd>Default is the empty code: a wrong code costs the whole transaction, a blank one only costs the code. <code>exception_for</code> is always called with a zero remainder, so its currency test is the only branch that can fire; the code does return OVERPAYMENT and PARTIAL, but nothing reaches it.</dd></div>
-      <div class="note note-info"><dt>note</dt><dd>Categories are the fallback for lines that settle nothing: 3,203 of 3,317 no-item rows end in the sign default, so most of the category accuracy comes from a two-value guess, not from the keyword table.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Default is the empty code: a wrong code costs the whole transaction, a blank one only costs the code. <code>exception_for</code> is always called with a zero remainder, so its currency test is the only branch that can fire; the code does return OVERPAYMENT, but nothing reaches it.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>Categories are the fallback for lines that settle nothing: 2,160 of 2,255 no-item rows end in the sign default, so most of the category accuracy comes from a two-value guess, not from the keyword table.</dd></div>
     </div>
       <table class="tbl">
         <caption>exception codes (closed list of 10)</caption>
         <thead><tr><th>code</th><th>in code</th><th>emitted</th><th>why</th></tr></thead>
         <tbody>
-          <tr><td class="mono live">FX_DIFFERENCE</td><td class="mono acc">yes</td><td class="n">21</td><td class="wrap">item and line currency differ and the item clears</td></tr>
-          <tr><td class="mono dead">PARTIAL</td><td class="mono acc">yes</td><td class="n">0</td><td class="wrap">allocation always applies the whole open amount, so the remainder is never positive</td></tr>
+          <tr><td class="mono live">PARTIAL</td><td class="mono dead">no</td><td class="n">984</td><td class="wrap">allocation always applies the whole open amount, so the remainder is never positive</td></tr>
+          <tr><td class="mono live">SHORT_DISPUTE</td><td class="mono dead">no</td><td class="n">56</td><td class="wrap">needs the advice text, which is not parsed</td></tr>
+          <tr><td class="mono live">FX_DIFFERENCE</td><td class="mono acc">yes</td><td class="n">54</td><td class="wrap">item and line currency differ and the item clears</td></tr>
           <tr><td class="mono dead">OVERPAYMENT</td><td class="mono acc">yes</td><td class="n">0</td><td class="wrap">same reason: applied is never above open</td></tr>
           <tr><td class="mono dead">SHORT_DISCOUNT</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">needs payment terms and the three day grace window</td></tr>
           <tr><td class="mono dead">SHORT_BANK_CHARGES</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">shortfall within 60 EUR and 2 percent of the item</td></tr>
           <tr><td class="mono dead">SHORT_WITHHOLDING</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">10, 1.5 or 1.25 percent of the invoice total</td></tr>
-          <tr><td class="mono dead">SHORT_DISPUTE</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">needs the advice text, which is not parsed</td></tr>
           <tr><td class="mono dead">DUPLICATE_PAYMENT</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">a book state, not a row property</td></tr>
           <tr><td class="mono dead">UNIDENTIFIED</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">also a category; never used on an item row</td></tr>
           <tr><td class="mono dead">RETURNED</td><td class="mono dead">no</td><td class="n">0</td><td class="wrap">re-opens an item that a collection already closed</td></tr>
@@ -614,8 +617,8 @@ rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</spa
         <thead><tr><th>order</th><th>test</th><th>result</th><th>rows</th></tr></thead>
         <tbody>
           <tr><td class="mono live">1</td><td>counterparty is one of our IBANs</td><td class="mono">INTERNAL_TRANSFER · INTERCOMPANY</td><td class="n">0</td></tr>
-          <tr><td class="mono live">2</td><td>folded text against 17 keyword families</td><td class="mono">one of 17 named categories</td><td class="n">114</td></tr>
-          <tr><td class="mono live">3</td><td>sign of the line</td><td class="mono">UNIDENTIFIED · BANK_FEES</td><td class="n">3,203</td></tr>
+          <tr><td class="mono live">2</td><td>folded text against 17 keyword families</td><td class="mono">one of 17 named categories</td><td class="n">95</td></tr>
+          <tr><td class="mono live">3</td><td>sign of the line</td><td class="mono">UNIDENTIFIED · BANK_FEES</td><td class="n">2,160</td></tr>
         </tbody>
       </table>
     </div>
@@ -627,21 +630,22 @@ rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</spa
     <div class="sec-head">
       <span class="num">6</span>
       <h2>Process, validate, evaluate</h2>
-      <span class="src"><b>src/bankrec/pipeline.py</b> process · evaluate.score_file</span>
+      <span class="src"><b>src/bankrec/pipeline.py</b> process · evaluate.score_file · hooks · insights</span>
     </div>
     <div class="sec-grid">
     <div class="notes">
       <div class="note note-inv"><dt>invariant</dt><dd>Every bank line appears exactly once, as item rows or as a single category row, and never as both. No duplicate <code>(bank_txn_id, item_id)</code>. <code>make validate</code> checks the same rules the server does, before any upload.</dd></div>
       <div class="note note-info"><dt>note</dt><dd>The file is scored offline with the vendored scorer, so this number is the leaderboard's number, and the 65 segments below are the same slices it reports.</dd></div>
-      <div class="note note-info"><dt>note</dt><dd>The exception weight is worth 0.03 points because only 1 of 10 codes is ever emitted. Macro F1 averages over classes, not rows, so one rare code is worth as much as a segment with hundreds of lines.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>The exception weight is worth 0.96 points because only 3 of 10 codes is ever emitted. Macro F1 averages over classes, not rows, so one rare code is worth as much as a segment with hundreds of lines.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd><code>process --trace</code> runs a <code>DecisionHook</code> after the matcher has already decided (it observes, it cannot settle an item — that would break the chronological book in the index stage) and writes which rule fired and how many candidates it had per line. <code>evaluate --explain</code> reads that sidecar and the golden file to turn the score into a report: which failure kind lost the most lines, and which rule to fix next.</dd></div>
     </div>
       <table class="tbl">
-        <caption>score 21.23 = 100 × (0.50 F1 + 0.30 accuracy + 0.20 macro F1)</caption>
+        <caption>score 39.55 = 100 × (0.50 F1 + 0.30 accuracy + 0.20 macro F1)</caption>
         <thead><tr><th>component</th><th>weight × value</th><th>points</th><th>share of its own maximum</th></tr></thead>
         <tbody>
-          <tr><td class="mono">allocation F1</td><td class="mono">0.50 × 0.1878</td><td class="n">9.39</td><td class="cell"><span class="bar" style="width:37.6%"></span></td></tr>
-          <tr><td class="mono">transaction accuracy</td><td class="mono">0.30 × 0.3939</td><td class="n">11.82</td><td class="cell"><span class="bar" style="width:39.4%"></span></td></tr>
-          <tr><td class="mono">exception macro F1</td><td class="mono">0.20 × 0.0013</td><td class="n">0.03</td><td class="cell"><span class="bar soft" style="width:0.4%"></span></td></tr>
+          <tr><td class="mono">allocation F1</td><td class="mono">0.50 × 0.4904</td><td class="n">24.52</td><td class="cell"><span class="bar" style="width:98.1%"></span></td></tr>
+          <tr><td class="mono">transaction accuracy</td><td class="mono">0.30 × 0.4691</td><td class="n">14.07</td><td class="cell"><span class="bar" style="width:46.9%"></span></td></tr>
+          <tr><td class="mono">exception macro F1</td><td class="mono">0.20 × 0.0479</td><td class="n">0.96</td><td class="cell"><span class="bar soft" style="width:4.8%"></span></td></tr>
         </tbody>
       </table>
       <table class="tbl">
@@ -668,12 +672,12 @@ rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</spa
       <div class="term">
         <div class="term-top"><b>real output</b><span>sample phase</span></div>
         <pre><span class="p">$</span> make process PHASE=sample
-<span class="o">[sample] 8,499 bank lines, 65,846 items -&gt; builds/20261107-1048-35d1df3b-baseline.csv.gz</span>
-<span class="o">[sample] 8,499 lines -&gt; 6,252 item rows + 3,317 category rows</span>
+<span class="o">[sample] 8,499 bank lines, 65,846 items -&gt; builds/20261107-1109-f43c1f64-insight-fixed.csv.gz</span>
+<span class="o">[sample] 8,499 lines -&gt; 18,281 item rows + 2,255 category rows</span>
 
 <span class="p">$</span> make evaluate PHASE=sample
-<span class="o">score  21.23 | alloc F1 0.1878 (P 0.6294 / R 0.1104)</span>
-<span class="o">9,569 rows over 8,499/8,499 lines</span>
+<span class="o">score  39.55 | alloc F1 0.4904 (P 0.7235 / R 0.3709)</span>
+<span class="o">20,536 rows over 8,499/8,499 lines</span>
 
 <span class="p">$</span> python -m bankrec whoami
 <span class="o">{"team": "...", "status": "..."}   # GET /api/me, uses no upload slot</span>
@@ -681,9 +685,9 @@ rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</spa
 <span class="p">$</span> make push PHASE=LIVE
 <span class="o">-- about to spend a LIVE submission ------------------------------</span>
   phase            LIVE  (public leaderboard, repeatable)
-  rows             9,569
-  uncompressed     360 kB  (packed 85 kB)
-  sha256 (csv)     35d1df3b508d01631e949e879feee02cdbe2f9e022a2d94c3864aeee5f3402a7
+  rows             20,536
+  uncompressed     835 kB  (packed 198 kB)
+  sha256 (csv)     f43c1f647788c6cd75e6b5d3070fea123522b3c2e4d9d0c3285e705677aa8513
 <span class="p">Type 'LIVE' to upload, anything else aborts:</span>
 <span class="o"># nothing was typed, so nothing was uploaded, and no slot was spent</span></pre>
       </div>
@@ -705,31 +709,31 @@ rows = self._rows(txn, referenced)      <span class="o"># emits AND settles</spa
     </div>
     <div class="sec-grid">
     <div class="notes">
-      <div class="note note-info"><dt>note</dt><dd>36 of 65 segments still score zero, and they hold 2,217 of 8,499 lines. Every one of them is a missing branch, not a tuning problem: precision is already 0.629.</dd></div>
+      <div class="note note-info"><dt>note</dt><dd>28 of 65 segments still score zero, and they hold 1,680 of 8,499 lines. Every one of them is a missing branch, not a tuning problem: precision is already 0.723.</dd></div>
       <div class="note note-info"><dt>note</dt><dd>Add evidence, then measure. One branch per change, compared per segment, kept only if it moves the segment it targets without regressing the others.</dd></div>
     </div>
       <table class="tbl">
         <caption>segments by lines, first 18 of 65</caption>
         <thead><tr><th>segment</th><th>lines</th><th>accuracy</th><th>lines (bar)</th><th>what it needs</th></tr></thead>
         <tbody>
-          <tr><td class="mono acc">ar_ref_noise</td><td class="n">2,155</td><td class="n">0.633</td><td class="cell"><span class="bar soft" style="width:100.0%"></span></td><td class="wrap">already covered: reference_tokens</td></tr>
-          <tr><td class="mono acc">ar_1to1</td><td class="n">927</td><td class="n">0.638</td><td class="cell"><span class="bar soft" style="width:43.0%"></span></td><td class="wrap">already covered: party gate</td></tr>
-          <tr><td class="mono mono">ap_payment_multi</td><td class="n">787</td><td class="n">0.057</td><td class="cell"><span class="bar" style="width:36.5%"></span></td><td class="wrap">expand payment_runs/</td></tr>
-          <tr><td class="mono mono">ap_payment_single</td><td class="n">458</td><td class="n">0.454</td><td class="cell"><span class="bar" style="width:21.3%"></span></td><td class="wrap">expand payment_runs/</td></tr>
-          <tr><td class="mono acc">nonitem_bank_fees</td><td class="n">437</td><td class="n">0.984</td><td class="cell"><span class="bar soft" style="width:20.3%"></span></td><td class="wrap">already covered: keyword table</td></tr>
-          <tr><td class="mono mono">ar_1toN_text</td><td class="n">349</td><td class="n">0.014</td><td class="cell"><span class="bar" style="width:16.2%"></span></td><td class="wrap">split the remittance text</td></tr>
-          <tr><td class="mono mono">ar_same_amount_fifo</td><td class="n">256</td><td class="n">0.504</td><td class="cell"><span class="bar" style="width:11.9%"></span></td><td class="wrap">oldest-first inside the party</td></tr>
+          <tr><td class="mono acc">ar_ref_noise</td><td class="n">2,155</td><td class="n">0.637</td><td class="cell"><span class="bar soft" style="width:100.0%"></span></td><td class="wrap">already covered: reference_tokens</td></tr>
+          <tr><td class="mono acc">ar_1to1</td><td class="n">927</td><td class="n">0.936</td><td class="cell"><span class="bar soft" style="width:43.0%"></span></td><td class="wrap">already covered: party gate</td></tr>
+          <tr><td class="mono mono">ap_payment_multi</td><td class="n">787</td><td class="n">0.127</td><td class="cell"><span class="bar" style="width:36.5%"></span></td><td class="wrap">expand payment_runs/</td></tr>
+          <tr><td class="mono acc">ap_payment_single</td><td class="n">458</td><td class="n">0.869</td><td class="cell"><span class="bar soft" style="width:21.3%"></span></td><td class="wrap">expand payment_runs/</td></tr>
+          <tr><td class="mono acc">nonitem_bank_fees</td><td class="n">437</td><td class="n">0.982</td><td class="cell"><span class="bar soft" style="width:20.3%"></span></td><td class="wrap">already covered: keyword table</td></tr>
+          <tr><td class="mono mono">ar_1toN_text</td><td class="n">349</td><td class="n">0.032</td><td class="cell"><span class="bar" style="width:16.2%"></span></td><td class="wrap">split the remittance text</td></tr>
+          <tr><td class="mono mono">ar_same_amount_fifo</td><td class="n">256</td><td class="n">0.520</td><td class="cell"><span class="bar" style="width:11.9%"></span></td><td class="wrap">oldest-first inside the party</td></tr>
           <tr><td class="mono live">ar_short_discount</td><td class="n">218</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:10.1%"></span></td><td class="wrap">terms + 3 day grace</td></tr>
           <tr><td class="mono live">ar_dd_returned</td><td class="n">202</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:9.4%"></span></td><td class="wrap">re-open on return</td></tr>
           <tr><td class="mono live">ar_1toN_credit_note</td><td class="n">199</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:9.2%"></span></td><td class="wrap">net the credit note</td></tr>
           <tr><td class="mono live">ar_instalment</td><td class="n">186</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:8.6%"></span></td><td class="wrap">PARTIAL across lines</td></tr>
-          <tr><td class="mono mono">ar_same_amount_month</td><td class="n">185</td><td class="n">0.595</td><td class="cell"><span class="bar" style="width:8.6%"></span></td><td class="wrap">already covered: unique amount</td></tr>
+          <tr><td class="mono mono">ar_same_amount_month</td><td class="n">185</td><td class="n">0.578</td><td class="cell"><span class="bar" style="width:8.6%"></span></td><td class="wrap">already covered: unique amount</td></tr>
           <tr><td class="mono live">ar_partial</td><td class="n">174</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:8.1%"></span></td><td class="wrap">emit PARTIAL at all</td></tr>
           <tr><td class="mono live">unidentified</td><td class="n">152</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:7.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
-          <tr><td class="mono acc">ar_third_party_confirming</td><td class="n">132</td><td class="n">0.788</td><td class="cell"><span class="bar soft" style="width:6.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
-          <tr><td class="mono acc">ap_direct_debit</td><td class="n">131</td><td class="n">0.611</td><td class="cell"><span class="bar soft" style="width:6.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
-          <tr><td class="mono live">ar_n_to_m</td><td class="n">102</td><td class="n">0.000</td><td class="cell"><span class="bar" style="width:4.7%"></span></td><td class="wrap">subset sum</td></tr>
-          <tr><td class="mono acc">nonitem_bank_fees_intl</td><td class="n">99</td><td class="n">0.889</td><td class="cell"><span class="bar soft" style="width:4.6%"></span></td><td class="wrap">already covered: keyword table</td></tr>
+          <tr><td class="mono acc">ar_third_party_confirming</td><td class="n">132</td><td class="n">0.818</td><td class="cell"><span class="bar soft" style="width:6.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
+          <tr><td class="mono acc">ap_direct_debit</td><td class="n">131</td><td class="n">0.870</td><td class="cell"><span class="bar soft" style="width:6.1%"></span></td><td class="wrap dead">not mapped yet</td></tr>
+          <tr><td class="mono mono">ar_n_to_m</td><td class="n">102</td><td class="n">0.029</td><td class="cell"><span class="bar" style="width:4.7%"></span></td><td class="wrap">subset sum</td></tr>
+          <tr><td class="mono acc">nonitem_bank_fees_intl</td><td class="n">99</td><td class="n">0.859</td><td class="cell"><span class="bar soft" style="width:4.6%"></span></td><td class="wrap">already covered: keyword table</td></tr>
         </tbody>
       </table>
     </div>
