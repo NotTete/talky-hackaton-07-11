@@ -80,16 +80,41 @@ class Returns:
                 rows = [r for r in op.rows if r.amt == cash]
                 if len(rows) == 1:
                     return self._mk("dd", op, rows, line, book)
-        if not cands:
-            return None
         cands.sort(key=lambda c: (-c[0].day, c[0].oid))
         for op, mnd in cands:        # latest collection <= day whose amount explains the cash
             rows = [r for r in op.rows if r.party.get("mandate") == mnd]
             if sum(r.amt for r in rows) != cash:
                 rows = [r for r in rows if r.amt == cash][:1]
             if rows:
-                return self._mk("dd", op, rows, line, book)
-        return None
+                h = self._mk("dd", op, rows, line, book)
+                if h:
+                    return h
+        return self._dd_by_master(line, mandates, cash, book) if mandates else None
+
+    def _dd_by_master(self, line, mandates, cash, book) -> Hyp | None:
+        """The collection predates the files we hold: the mandate names the customer (master),
+        and the returned receipt is that customer's direct-debit invoice of exactly this amount."""
+        custs = getattr(getattr(self.phase, "masters", None), "customers", None) or {}
+        owners = sorted(c for c, r in custs.items() if r.get("mandate") in mandates)
+        if not owners:
+            return None
+        idx = getattr(self, "_ari_by_party", None)
+        if idx is None:
+            idx = self._ari_by_party = {}
+            for it in book.items:
+                if it.kind == "ARI" and it.method == "dd":
+                    idx.setdefault(it.party_id, []).append(it.idx)
+        hits = [i for o in owners for i in idx.get(o, ())
+                if book.items[i].total == cash and book.items[i].issue <= line.day
+                and (book.items[i].open == 0 or book.hist.get(i))]
+        if len(hits) != 1:
+            hits = [i for i in hits if book.hist.get(i)]
+        if len(hits) != 1:
+            return None
+        i = hits[0]
+        return Hyp(resolver="ret.dd_master", tier=1, items=[i], is_return=True,
+                   advice={i: {"paid": book.items[i].total, "ded": 0, "reason": "", "src": "ret"}},
+                   note="dd_master")
 
     def _cheque(self, line, text, cash, book) -> Hyp | None:
         m = CHEQUE.search(text)

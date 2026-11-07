@@ -119,6 +119,12 @@ class Ops:
                                         "cheque_deposits", "payment_runs")
                   for p in (root / d).glob("*.csv")]
         start = min((m for m in months if m), default=0)
+        # train:YYYY-MM windows: only the window months plus the look-back (LIVE/sample unchanged)
+        wlo = whi = 0
+        if str(getattr(phase, "name", "")).startswith("train:"):
+            from recon2.load import train_window
+            lo_s, hi_s = train_window(phase.name)
+            wlo, whi = int(lo_s[:4]) * 100 + int(lo_s[5:7]), int(hi_s[:4]) * 100 + int(hi_s[5:7])
         for r in [root, *[Path(x) for x in (extra_roots or [])]]:
             extra = r != root
             for kind, sub, lb in (("dd", "direct_debit_batches", OTHER_LOOKBACK),
@@ -126,6 +132,8 @@ class Ops:
                                   ("cheque", "cheque_deposits", OTHER_LOOKBACK),
                                   ("run", "payment_runs", RUN_LOOKBACK)):
                 for p in sorted((r / sub).glob("*.csv")):
+                    if wlo and not (_mback(wlo, lb) <= _ym(p.name) <= whi):
+                        continue
                     if extra and start and not (_mback(start, lb) <= _ym(p.name) < start):
                         continue
                     self._load(kind, p)

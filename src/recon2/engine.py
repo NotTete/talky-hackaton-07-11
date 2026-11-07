@@ -260,6 +260,9 @@ class Engine:
             try:
                 advs = list(advm.load_advices(ph.root))
                 start = min((ln.day for ln in ph.lines), default=0)
+                if phase_name.startswith("train:") and ph.lines:   # window +-10d only
+                    end = max(ln.day for ln in ph.lines)
+                    advs = [a for a in advs if start - 10 <= a.payment_date <= end + 10]
                 for e in self.extra:
                     # advices received before the phase for payments inside it (H7: up to -8d)
                     advs += [a for a in advm.load_advices(DATA / e) if a.payment_date >= start]
@@ -279,6 +282,7 @@ class Engine:
         self.timings["modules"] = time.perf_counter() - t
         self.item_ids = [it.item_id for it in self.book.items]
         self.errors: dict[str, int] = {}
+        self.errors_tb: set[str] = set()  # RECON2_TB=1 prints the first traceback per module
 
     def _plans(self) -> dict[int, int]:
         """item idx -> instalment count from PDF facts (key (entity, doc) or (entity, supplier|doc))."""
@@ -299,6 +303,7 @@ class Engine:
         try:
             return fn(*a)
         except Exception as ex:
+            if os.environ.get("RECON2_TB") and name not in self.errors_tb: import traceback; self.errors_tb.add(name); traceback.print_exc()
             k = f"{name}:{type(ex).__name__}:{str(ex)[:50]}"
             self.errors[k] = self.errors.get(k, 0) + 1
             return None
@@ -380,8 +385,11 @@ class Engine:
             hyps += self._call("refs", self.res.by_ref, line, pset, tr) or []
         if not hyps or all(R.fit_level(self.res, line, h) < 2 for h in hyps):
             hyps += self._call("party", self.res.by_party_amount, line, [p for p, _ in pairs], tr, frozenset(), frozenset(p for p, s in pairs if s.startswith("child:"))) or []
-        if not hyps and pset:
-            h = self._call("refund_cn", self.res.refund_cn, line, pset)
+        if not hyps:
+            # a credit may be a supplier refunding an APC, a debit a customer credit note paid out:
+            # the payer is then on the opposite side of the usual one
+            opp = {p for p, _ in self.res.party_set(line, "AP" if line.cash > 0 else "AR")}
+            h = self._call("refund_cn", self.res.refund_cn, line, pset | opp) if (pset or opp) else None
             if h:
                 hyps.append(h)
         # 4. arbitration + decide

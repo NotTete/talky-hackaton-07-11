@@ -56,6 +56,13 @@ def entity_scope(line: Line, kind: str) -> set[str]:
     return {line.entity}
 
 
+def _load_wht() -> dict[str, int]:
+    import json
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[2] / "artifacts" / "wht.json"
+    return {k: int(v) for k, v in json.loads(p.read_text()).items()} if p.exists() else {}
+
+
 class Resolver:
     def __init__(self, book, masters=None, parties=None, pdf_facts: dict | None = None, fx=None):
         self.book = book
@@ -83,6 +90,17 @@ class Resolver:
             for i in book.by_doc(doc.split("|")[-1]):
                 if self.items[i].entity == ent:
                     self.replaced.setdefault(_alnum(rep), []).append(i)
+        # invoice PDF "less advance ... net amount due": the net is the payable cash (PARTIAL)
+        self.adv_net: dict[int, int] = {}
+        for (ent, doc), f in sorted((pdf_facts or {}).items()):
+            adv = f.get("advance") if isinstance(f, dict) else None
+            if not adv or not adv.get("net"):
+                continue
+            sup, _, d = doc.rpartition("|")
+            for i in book.by_doc(d):
+                if self.items[i].entity == ent and (not sup or self.items[i].party_id == sup):
+                    self.adv_net[i] = int(adv["net"])
+        self.wht_learned = _load_wht()
         self.dups: list[tuple[str, int, int, str]] = []   # (account, |cash|, day, side) of DUP lines
         self.states = 0
 
@@ -125,10 +143,10 @@ class Resolver:
                 return False
         return it.entity in entity_scope(line, it.kind)
 
-    def party_set(self, line: Line) -> list[tuple[str, str]]:
+    def party_set(self, line: Line, side: str | None = None) -> list[tuple[str, str]]:
         if self.parties is None:
             return []
-        side = "AR" if line.cash > 0 else "AP"
+        side = side or ("AR" if line.cash > 0 else "AP")
         try:
             ps = self.parties.resolve(line, side)
         except Exception:
@@ -188,6 +206,15 @@ class Resolver:
         for pos, t, tok, hits in per_tok:
             if len(hits) > 1 and dom:
                 hits = [i for i in hits if self.items[i].party_id == dom] or hits
+            if len(hits) > 1 and pset:   # truncated ref, several of the payer's invoices: the amount decides
+                own = [i for i in hits if self.items[i].open > 0 and self.items[i].party_id in pset]
+                for ok in (lambda x: self.fits_sum(line, x.ccy, x.open) == 3, lambda x: self._short_shape(line, x),
+                           lambda x: self.fits_sum(line, x.ccy, x.open)):   # exact, then explained short, then tolerance
+                    am = [i for i in own if ok(self.items[i])]
+                    if am:
+                        if len(am) == 1:
+                            hits = am
+                        break
             if len(hits) > 1 and dom and len(per_tok) > 1:
                 trace.setdefault("caps", []).append("REF_AMBIGUOUS:" + tok)
                 continue
@@ -366,6 +393,8 @@ class Resolver:
         if exact:
             best = max(self.fits_sum(line, it[i].ccy, it[i].open) for i in exact)
             exact = [i for i in exact if self.fits_sum(line, it[i].ccy, it[i].open) == best]
+            if best < 3 and len(plist) > 1 and not any(self.fits_sum(line, it[i].ccy, it[i].open) == 3 for i in cands):
+                exact = []   # tolerance-only coincidence across an ambiguous party set is not evidence
             if len(exact) == 1:
                 return [Hyp("party.amount", 4, exact, note="unique")]
             # several equal: keep the highest-precedence party that has one
@@ -376,8 +405,9 @@ class Resolver:
                     break
             if len(exact) == 1:
                 return [Hyp("party.amount", 4, exact, note="unique_p")]
-            pick = self._month_pick(line, exact) or self._oldest(exact)
-            return [Hyp("party.fifo", 5, [pick], note="fifo")]
+            if exact:
+                pick = self._month_pick(line, exact) or self._oldest(exact)
+                return [Hyp("party.fifo", 5, [pick], note="fifo")]
         # single-item short shapes (discount / withholding / bank charges)
         shp = [i for i in dcands if self._short_shape(line, it[i])]
         if not shp:
@@ -433,12 +463,12 @@ class Resolver:
         # withholding subset: one party, Σ(total - round(total*r)) == cash, gross rows
         for p in plist:
             wi = [i for i in per[p] if it[i].kind == "ARI" and it[i].open == it[i].total and it[i].ccy == line.ccy
-                  and it[i].entity in WHT_RATES]
+                  and self._wht_rates(it[i])]
             if len(wi) < 2:
                 continue
             wi = sorted(wi, key=lambda i: (it[i].due, it[i].issue, it[i].item_id))[:SUB_CANDS]
             cash = abs(line.cash)
-            for r in WHT_RATES[it[wi[0]].entity]:
+            for r in self._wht_rates(it[wi[0]]):
                 net = [it[i].total - (it[i].total * r + 5000) // 10000 for i in wi]
                 pick = _subset_exact(net, cash, 10, self)
                 if pick is not None and len(pick) >= 2:
@@ -503,6 +533,17 @@ class Resolver:
                 return Hyp("party.sweep_gap", 5, pick, [cns[x] for x in combo], note="sweep_gap")
         return None
 
+    def _wht_rates(self, x: Item) -> tuple[int, ...]:
+        """bp withheld by this customer: learned per customer, else entity default, else ES01 Moroccan = 10 %."""
+        r = self.wht_learned.get(x.party_id)
+        if r is not None:
+            return (r,) if r else ()
+        if x.entity in WHT_RATES:
+            return WHT_RATES[x.entity]
+        if x.entity == "ES01" and (self.customers.get(x.party_id) or {}).get("country") == "MA":
+            return (1000,)
+        return ()
+
     def _piece_shape(self, line: Line, it: Item) -> bool:
         if it.kind != "ARI" or it.open != it.total:
             return False
@@ -512,6 +553,8 @@ class Resolver:
         cash = c[0]
         if cash >= it.total:
             return False
+        if self.adv_net.get(it.idx) == cash:
+            return True
         for pct in (95, 90):
             if abs(cash * 100 - it.total * pct) <= 100:
                 return True
@@ -586,7 +629,7 @@ def arbitrate(res: Resolver, line: Line, hyps: list[Hyp]) -> Hyp | None:
 
     def key(h: Hyp):
         return (-fit_level(res, line, h), h.tier, len(h.items),
-                min(it[i].due for i in h.items), tuple(it[i].item_id for i in h.items))
+                min((it[i].due for i in h.items), default=0), tuple(it[i].item_id for i in h.items))
     return min(hyps, key=key)
 
 
