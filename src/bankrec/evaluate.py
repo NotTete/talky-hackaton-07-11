@@ -62,7 +62,12 @@ class ScoreReport:
         )
 
 
-def score_file(path: Path, settings: Settings | None = None, phase: str | None = None) -> ScoreReport:
+def golden_for(settings: Settings | None = None, phase: str | None = None):
+    """The scorer's `Golden` for a phase, plus the phase and the scorer module.
+
+    Shared by `score_file` and `insights`, so a local explanation is computed from the
+    exact same labels the leaderboard uses (CLAUDE.md §13: one definition, no drift).
+    """
     settings = settings or load_settings()
     data = Phase(settings, phase or settings.phase)
     golden_path = data.dir / "golden_allocations.csv.gz"
@@ -78,6 +83,11 @@ def score_file(path: Path, settings: Settings | None = None, phase: str | None =
         EXCEPTIONS,
         CATEGORIES,
     )
+    return golden, data, scorer
+
+
+def score_file(path: Path, settings: Settings | None = None, phase: str | None = None) -> ScoreReport:
+    golden, _data, scorer = golden_for(settings, phase)
     result = scorer.score_submission(golden, Path(path).read_bytes(), Path(path).name)
     return ScoreReport(
         ok=bool(result.get("ok")),
@@ -233,6 +243,7 @@ __all__ = [
     "ScoreReport",
     "evaluate_build",
     "format_segments",
+    "golden_for",
     "metrics_for",
     "score_file",
     "validate_file",

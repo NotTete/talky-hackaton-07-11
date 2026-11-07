@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from .builds import Build, BuildWriter, Builds
 from .config import Settings
 from .data import Phase
+from .hooks import DecisionHook, LineDecision
 from .matching import ItemIndex, Matcher
 from .preprocess import AdviceIndex, DocumentContext, load_advices
 from .rules import category_for
@@ -40,8 +41,14 @@ def process(
     *,
     limit: int = 0,
     name: str = "",
+    hooks: list[DecisionHook] | None = None,
 ) -> Build:
-    """Build one submission and publish it as an immutable build artifact."""
+    """Build one submission and publish it as an immutable build artifact.
+
+    `hooks` observe each decision (see hooks.py). They run after the matcher has decided
+    and cannot change the submission: matching is chronological, and a hook that settled
+    items would break that book (CLAUDE.md §7).
+    """
     started = time.time()
     phase = Phase(settings, phase_name)
     builds = Builds(settings.builds_dir)
@@ -62,6 +69,7 @@ def process(
     )
 
     stats = Stats(by_reason={})
+    hooks = list(hooks or [])
     total = len(txns)
     tick = max(total // 20, 1) if total > 25_000 else 0
     started_loop = time.time()
@@ -78,6 +86,17 @@ def process(
                 print(f"  {stats.lines:,}/{total:,} lines  {rate:,.0f}/s  eta {eta:,.0f}s", file=sys.stderr)
 
             allocations = matcher.match(txn)
+            if hooks:
+                decision = LineDecision(
+                    bank_txn_id=txn["bank_txn_id"],
+                    reason=matcher.reason,
+                    candidates=matcher.candidates,
+                    items=[row.item_id for row in allocations],
+                    amounts=[row.cents for row in allocations],
+                    exceptions=[row.exception for row in allocations],
+                )
+                for hook in hooks:
+                    hook.on_line(decision)
             if allocations:
                 for row in allocations:
                     out.write([txn["bank_txn_id"], row.item_id, f"{row.cents / 100:.2f}", "", row.exception])
@@ -91,6 +110,10 @@ def process(
                 stats.by_reason[category] = stats.by_reason.get(category, 0) + 1
 
         build = out.publish(item_phases=phase.used_item_phases or [])
+        for hook in hooks:
+            path = hook.finalize(builds.root, build.id)
+            if path:
+                build.trace = path
         build.rows = stats.item_rows + stats.no_item_rows
         build.lines = stats.lines
         build.item_rows = stats.item_rows
