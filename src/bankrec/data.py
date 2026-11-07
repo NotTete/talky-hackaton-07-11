@@ -127,7 +127,12 @@ class FX:
         if rates.is_empty():
             return
         df = rates.with_columns(pl.col("units_per_eur").cast(pl.Float64))
-        for currency, group in df.sort("date").group_by("currency", maintain_order=True):
+        for key, group in df.sort("date").group_by("currency", maintain_order=True):
+            # polars yields the group key as a tuple; str() on it would store the rates
+            # under "('GBP',)" and every rate lookup would silently return None -- which
+            # is exactly what it did, making every cross-currency comparison fall back to
+            # raw cents (CLAUDE.md §8 says to compare on one scale; this made it two).
+            currency = key[0] if isinstance(key, tuple) else key
             dates = [int(d.replace("-", "")) for d in group["date"].to_list()]
             rates_ = group["units_per_eur"].to_list()
             self._rates[str(currency)] = (dates, rates_)

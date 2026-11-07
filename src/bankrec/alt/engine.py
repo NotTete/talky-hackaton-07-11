@@ -40,6 +40,10 @@ from .ops import DIRECTION, Operations, select as select_entries
 # band so a bank spread or a rounded cent still *finds* the item (CLAUDE.md §8).
 MATCH_TOL_PCT = 0.01
 MATCH_TOL_MIN = 2
+# Cross-currency, the bank converts at its own corporate rate: POLICIES §3 allows up to
+# 3 % away from the ECB reference. Comparing a GBP invoice with a EUR credit at 1 % makes
+# every FX receipt look like a partial payment.
+FX_TOL_PCT = 0.03
 
 # Text that says the money came back. Every scheme has its own word for it.
 RETURN_WORDS = (
@@ -64,8 +68,9 @@ def _ymd(value) -> int:
     return int(d) if d.isdigit() else 0
 
 
-def _tol(cents: int) -> int:
-    return max(MATCH_TOL_MIN, int(round(abs(cents) * MATCH_TOL_PCT)))
+def _tol(cents: int, cross_currency: bool = False) -> int:
+    pct = FX_TOL_PCT if cross_currency else MATCH_TOL_PCT
+    return max(MATCH_TOL_MIN, int(round(abs(cents) * pct)))
 
 
 class Engine:
@@ -75,6 +80,7 @@ class Engine:
         self.ledger = Ledger(items, masters)
         self.ops = Operations(phase)
         self.advices = advice_mod.AdviceIndex(advice_mod.load(phase), self.ledger)
+        self.items_by_id = self.ledger.items
         self.cats = Categories(masters)
         self.excepts = Exceptions(masters, self.fx)
         self.stats: dict[str, int] = {}
@@ -134,6 +140,28 @@ class Engine:
         self.stats[name] = self.stats.get(name, 0) + 1
         self._commit(rows)
         return rows
+
+    # ------------------------------------------------------------------- fx
+    def _in_currency(self, item_id: str, currency: str, ymd: int) -> int:
+        """An item's open balance expressed in the bank line's currency.
+
+        `amount` must be submitted in the *item* currency but the cash is in the
+        *account* currency; every "does this add up" test therefore has to happen on one
+        side or the other, never across (CLAUDE.md §8). Everything that compares with
+        cash converts to the line; `decide` converts back.
+        """
+        item = self.items_by_id[item_id]
+        open_cents = self.ledger.open_cents(item_id)
+        if item["currency"] == currency:
+            return open_cents
+        converted = self.fx.convert(open_cents, item["currency"], currency, ymd)
+        return open_cents if converted is None else converted
+
+    def _to_item(self, cents: int, item: dict, currency: str, ymd: int) -> int:
+        if item["currency"] == currency:
+            return cents
+        converted = self.fx.convert(cents, currency, item["currency"], ymd)
+        return cents if converted is None else converted
 
     def _commit(self, rows: list[Row]) -> None:
         """Move the ledger. `RETURNED` re-opens; everything else consumes."""
@@ -254,7 +282,7 @@ class Engine:
                 return self._rows_from_docs([(unique[0], cash, "INVOICE")], ctx)
             return []
 
-        subset = _subset(candidates, cash, self.ledger, _tol(cash))
+        subset = _subset(candidates, cash, self._opens(candidates, ctx), _tol(cash))
         if subset:
             return self._rows_from_docs([(i, 0, "INVOICE") for i in subset], ctx, amounts_known=False)
         return []
@@ -279,8 +307,9 @@ class Engine:
             ]
             if len(open_items) < 2:
                 continue
-            total = sum(sign.get(self.ledger.item(i)["kind"], 1) * self.ledger.open_cents(i) for i in open_items)
-            if abs(total - cash) <= _tol(cash):
+            opens = self._opens(open_items, ctx)
+            total = sum(sign.get(self.ledger.item(i)["kind"], 1) * opens[i] for i in open_items)
+            if abs(total - cash) <= _tol(cash, self._any_cross(open_items, ctx)):
                 return self._rows_from_docs([(i, 0, "INVOICE") for i in open_items], ctx, amounts_known=False)
         return []
 
@@ -355,6 +384,13 @@ class Engine:
                         return exact
         return []
 
+    def _opens(self, item_ids: list[str], ctx: _Context) -> dict[str, int]:
+        """Open balances of these items, all expressed in the bank line's currency."""
+        return {i: self._in_currency(i, ctx.currency, ctx.ymd) for i in item_ids}
+
+    def _any_cross(self, item_ids: list[str], ctx: _Context) -> bool:
+        return any(self.ledger.item(i)["currency"] != ctx.currency for i in item_ids)
+
     def _narrow(self, hits: list[str], scope: set[str], ctx: _Context) -> list[str]:
         """Pick one item out of an ambiguous lookup, using everything else we know.
 
@@ -373,7 +409,12 @@ class Engine:
             if inside:
                 hits = inside
         if ctx is not None:
-            exact = [i for i in hits if abs(self.ledger.open_cents(i) - abs(ctx.cash)) <= _tol(ctx.cash)]
+            exact = [
+                i
+                for i in hits
+                if abs(self._in_currency(i, ctx.currency, ctx.ymd) - abs(ctx.cash))
+                <= _tol(ctx.cash, self.ledger.item(i)["currency"] != ctx.currency)
+            ]
             if len(exact) == 1:
                 return exact
             sided = [i for i in hits if self.ledger.item(i)["side"] == ctx.side]
@@ -458,31 +499,43 @@ class Engine:
         (§5.6).
         """
         order = sorted(unique, key=lambda i: (self.ledger.item(i)["issue_ymd"], i))
-        opens = {i: (self.ledger.open_cents(i) or self.ledger.item(i)["total_cents"]) for i in order}
-        notes = [i for i in order if self.ledger.item(i)["kind"] == "credit_note"]
-        invoices = [i for i in order if i not in set(notes)]
+        currency, ymd = ctx.currency, ctx.ymd
 
-        target = abs(ctx.cash) + sum(max(opens[i], 0) for i in notes)
-        out: dict[str, tuple[int, str]] = {i: (max(opens[i], 0), unique[i][1]) for i in notes}
+        def opened(item_id: str) -> int:
+            """Open balance in the *line's* currency (0 -> the untouched total)."""
+            value = self._in_currency(item_id, currency, ymd)
+            if value > 0:
+                return value
+            item = self.ledger.item(item_id)
+            return self._to_item(item["total_cents"], {"currency": currency}, item["currency"], ymd)
 
-        total = sum(max(opens[i], 0) for i in invoices)
-        if invoices and abs(total - target) <= _tol(target):
+        opens = {i: max(opened(i), 0) for i in order}
+        notes = {i for i in order if self.ledger.item(i)["kind"] == "credit_note"}
+        invoices = [i for i in order if i not in notes]
+
+        target = abs(ctx.cash) + sum(opens[i] for i in notes)
+        out: dict[str, tuple[int, str]] = {i: (opens[i], unique[i][1]) for i in notes}
+
+        total = sum(opens[i] for i in invoices)
+        if invoices and abs(total - target) <= _tol(target, ctx.cross(self, order)):
             out.update({i: (opens[i], unique[i][1]) for i in invoices})
-            return out
-        if len(invoices) == 1:
+        elif len(invoices) == 1:
             # One named invoice simply receives the whole cash: decide() explains the gap.
             out[invoices[0]] = (target, unique[invoices[0]][1])
-            return out
-        left = target
-        for item_id in invoices:
-            take = min(max(opens[item_id], 0), left)
-            if take <= 0:
-                continue
-            out[item_id] = (take, unique[item_id][1])
-            left -= take
-            if left <= 0:
-                break
-        return out
+        else:
+            left = target
+            for item_id in invoices:
+                take = min(opens[item_id], left)
+                if take <= 0:
+                    continue
+                out[item_id] = (take, unique[item_id][1])
+                left -= take
+                if left <= 0:
+                    break
+        return {
+            i: (self._to_item(cents, self.ledger.item(i), currency, ymd), dtype)
+            for i, (cents, dtype) in out.items()
+        }
 
     def _rows_from_advice(self, advice, ctx: _Context) -> list[Row]:
         docs: list[tuple[str, int, str]] = []
@@ -504,7 +557,8 @@ class _Context:
     """Everything derived from one bank line, computed once."""
 
     __slots__ = ("txn", "text", "tokens", "op_tokens", "cash", "ymd", "party", "side",
-                 "reasons", "deductions", "want_count", "parties", "_scope", "is_return")
+                 "reasons", "deductions", "want_count", "parties", "_scope", "is_return",
+                 "currency")
 
     def __init__(self, txn: dict, engine: Engine):
         self.txn = txn
@@ -519,6 +573,19 @@ class _Context:
         self.tokens = refs.extract(*(str(f or "") for f in fields))
         self.op_tokens = refs.operational(*(str(f or "") for f in fields))
         self.cash = int(txn.get("amount_cents") or 0)
+        self.currency = str(txn.get("currency") or "EUR")
+        # A cross-currency statement line carries the original amount it was ordered in
+        # ("the bank shows the original amount and/or rate", POLICIES §3). That number is
+        # the invoice currency exactly, with no spread to allow for -- always better
+        # evidence than converting the booked amount at a reference rate.
+        orig = txn.get("orig_amount")
+        orig_currency = str(txn.get("orig_currency") or "")
+        if orig and orig_currency:
+            try:
+                self.cash = int(round(float(orig) * 100)) * (1 if self.cash >= 0 else -1)
+                self.currency = orig_currency
+            except (TypeError, ValueError):
+                pass
         self.ymd = _ymd(txn.get("booking_date"))
         self.side = "AR" if self.cash > 0 else "AP"
         self.reasons: dict[str, str] = {}
@@ -552,6 +619,9 @@ class _Context:
                 if self.parties:
                     break
         self.party = self.parties[0] if self.parties else ""
+
+    def cross(self, engine, item_ids) -> bool:
+        return engine._any_cross(list(item_ids), self)
 
     def scope(self, ledger) -> list[str]:
         """The items of every shortlisted party: the search space for a noisy reference."""
@@ -601,7 +671,7 @@ def _hit(text: str, needles: tuple[str, ...]) -> bool:
     return any(n in text for n in needles)
 
 
-def _subset(candidates: list[str], cash: int, ledger: Ledger, tol: int) -> list[str]:
+def _subset(candidates: list[str], cash: int, opens: dict[str, int], tol: int) -> list[str]:
     """The oldest-first set of open items whose balances add up to the cash.
 
     Deliberately not a general subset-sum: FIFO is the documented behaviour (§5.6) and a
@@ -609,12 +679,12 @@ def _subset(candidates: list[str], cash: int, ledger: Ledger, tol: int) -> list[
     the right one.
     """
     for item_id in candidates:
-        if abs(ledger.open_cents(item_id) - cash) <= tol:
+        if abs(opens.get(item_id, 0) - cash) <= tol:
             return [item_id]
     running = 0
     picked: list[str] = []
     for item_id in candidates:
-        open_cents = ledger.open_cents(item_id)
+        open_cents = opens.get(item_id, 0)
         if open_cents <= 0:
             continue
         picked.append(item_id)

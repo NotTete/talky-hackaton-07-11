@@ -106,6 +106,7 @@ class Exceptions:
         cross_currency = bool(
             item.get("currency") and txn.get("currency") and item["currency"] != txn["currency"]
         )
+        tolerance = 0.03 if cross_currency else 0.005
         shortfall = open_before - cash_cents
         if deduction > 0:
             # The advice states the deduction outright; trust it over the subtraction,
@@ -113,13 +114,13 @@ class Exceptions:
             shortfall = deduction
             cash_cents = open_before - deduction
 
-        if shortfall < 0 and not _close(cash_cents, open_before):
+        if shortfall < 0 and not _close(cash_cents, open_before, pct=tolerance):
             # §3: the invoice clears in full, the excess stays on the account.
             if cross_currency:
                 return "FX_DIFFERENCE", open_before
             return ("OVERPAYMENT" if alone else ""), open_before
 
-        if _close(cash_cents, open_before):
+        if _close(cash_cents, open_before, pct=tolerance):
             return ("FX_DIFFERENCE" if cross_currency else ""), open_before
 
         # --- a real shortfall: either explained (item clears) or not (item stays open)
