@@ -137,6 +137,8 @@ class Resolver:
     # ------------------------------------------------------------------ eligibility
     def eligible(self, line: Line, i: int, allow_cross_side: bool = False) -> bool:
         it = self.items[i]
+        if it.issue and line.day < it.issue:
+            return False   # causality: no payment before the document exists
         inv, cn = side_kinds(line)
         if it.kind not in inv + cn:
             if not allow_cross_side or it.kind not in ("ARC", "APC"):
@@ -478,6 +480,34 @@ class Resolver:
                 sp = [i for i in shp if it[i].party_id == p]
                 if sp:
                     return [Hyp("party.short", 5, [self._oldest(sp)], note="short_fifo")]
+        # exact single item older than the 365 d window: unique across the whole party set
+        ex = []
+        for p in plist:
+            if p in child:
+                continue
+            for i in self.book.open_of_party(p, inv_k):
+                x = it[i]
+                if 365 < line.day - x.issue <= 1100 and not x.residue and self.eligible(line, i) \
+                        and self.fits_sum(line, x.ccy, x.open, True) == 3:
+                    ex.append(i)
+        if len(ex) == 1 and not cands_exact_any(self, line, cands):
+            return [Hyp("party.amount", 4, ex, note="old_unique")]
+        # residue items (already part-paid): next instalment (total/n) or the final remainder (open == cash)
+        rs = []
+        for p in plist:
+            if p in child:
+                continue
+            for i in self.book.open_of_party(p, inv_k):
+                x = it[i]
+                if not (x.residue and self.eligible(line, i) and 0 <= line.day - x.issue <= 730):
+                    continue
+                c = self.cash_in(line, x.ccy)
+                if c is None or c[0] != c[1] or x.kind != "ARI":
+                    continue
+                if x.open == c[0] or (c[0] < x.open and any(x.total // n == c[0] for n in range(2, 7))):
+                    rs.append(i)
+        if len(rs) == 1:
+            return [Hyp("party.resid", 4, rs, note="resid")]
         # subsets: one party at a time (names are a SET, a sum across parties is coincidence)
         for p in plist:
             cs_all = per[p]
@@ -629,7 +659,7 @@ class Resolver:
             return False
         if self.adv_net.get(it.idx) == cash:
             return True
-        for pct in (95, 90):
+        for pct in (98, 95, 90, 70, 60, 50, 40, 30):
             if abs(cash * 100 - it.total * pct) <= 100:
                 return True
         for n in range(2, 7):
@@ -708,6 +738,11 @@ def arbitrate(res: Resolver, line: Line, hyps: list[Hyp]) -> Hyp | None:
 
 
 # ---------------------------------------------------------------------- helpers
+def cands_exact_any(res, line, cands) -> bool:
+    it = res.items
+    return any(res.fits_sum(line, it[i].ccy, it[i].open) for i in cands)
+
+
 def _alnum(s: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
 
