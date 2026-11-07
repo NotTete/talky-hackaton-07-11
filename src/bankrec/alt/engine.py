@@ -820,28 +820,33 @@ class Engine:
             ),
             0,
         )
-        if invoices and grossed:
-            # The cash covers the invoices exactly, or falls short of them by a uniform
-            # documented percentage (a discount taken on the whole payment, tax withheld
-            # at source). Share the *cash* in proportion, never the open balances: it is
-            # the per-item shortfall that lets `decide` name SHORT_DISCOUNT /
-            # SHORT_WITHHOLDING / SHORT_BANK_CHARGES and then write the full amount.
-            # Handing it the full balance hides the very difference it has to explain.
+        if len(invoices) == 1:
+            # One named invoice simply receives the whole cash: `decide` explains the gap,
+            # in either direction (SHORT_BANK_CHARGES, OVERPAYMENT, PARTIAL). This case is
+            # first because it is the only one where the gap is attributable: with a single
+            # invoice there is nobody else it could belong to.
+            out[invoices[0]] = (target, unique[invoices[0]][1])
+        elif invoices and grossed and grossed != target:
+            # The cash falls short of the invoices by a uniform documented percentage: a
+            # discount taken on the whole payment, tax withheld at source. Share the
+            # *cash* in proportion, never the open balances: it is the per-item shortfall
+            # that lets `decide` name SHORT_DISCOUNT / SHORT_WITHHOLDING /
+            # SHORT_BANK_CHARGES and then write the full amount. Handing it the full
+            # balance hides the very difference it has to explain.
             out.update(
                 {i: (_round_to(opens[i], target, total), unique[i][1]) for i in invoices}
             )
-        elif len(invoices) == 1:
-            # One named invoice simply receives the whole cash: decide() explains the gap.
-            out[invoices[0]] = (target, unique[invoices[0]][1])
         else:
-            # Several invoices named, and the cash does not match their sum by any
-            # documented rate. Clearing each in full is the better bet than slicing the
-            # cash across them: when the sum is *larger* the usual cause is that an
-            # earlier line of ours failed to allocate, so our balances are stale rather
-            # than the payment partial -- and a sliced amount is wrong twice (it loses
-            # the pair to the 0.5 % tolerance *and* mislabels it PARTIAL). Slicing is
-            # reserved for the single-invoice case above, which is where the real
-            # instalments and retentions live.
+            # Several invoices, and no documented rate explains the difference between
+            # their sum and the cash. Every one of them is settled in full and whatever
+            # is left over belongs to *one* of them -- which one is written down in the
+            # advice, not derivable from the sum. Slicing it across all of them instead is
+            # wrong on every row at once: it loses each pair to the 0.5 % amount tolerance
+            # *and* mislabels it PARTIAL. One 450-invoice receipt produced 414 such rows,
+            # 46 % of every PARTIAL false positive in the sample from a single line.
+            # (When the sum is *larger* than the cash the usual cause is not a partial
+            # payment at all: it is an earlier line of ours that failed to allocate, so
+            # our own balances are stale.)
             out.update({i: (opens[i], unique[i][1]) for i in invoices})
         return {
             i: (self._to_item(cents, self.ledger.item(i), currency, ymd), dtype)
