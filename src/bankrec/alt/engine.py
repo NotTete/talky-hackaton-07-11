@@ -219,9 +219,11 @@ class Engine:
             for item_id in self._resolve_doc(token, scope, ctx):
                 if item_id in seen:
                     continue
-                item = self.ledger.item(item_id)
-                if ctx.parties and item["party_id"] not in ctx.parties and len(ctx.tokens) > 1:
-                    continue
+                # No party veto here on purpose: a document number that resolves
+                # exactly is harder evidence than a counterparty name matched through a
+                # truncated, accent-folded bank text. Vetoing on the name loses every
+                # line whose payer the masters spell differently -- and the balance
+                # arbitration in resolve() already discards a set that does not add up.
                 seen.add(item_id)
                 found.append((item_id, 0, "INVOICE"))
         if not found:
@@ -534,14 +536,21 @@ class _Context:
             # A known paying IBAN is an identity, not a guess (POLICIES §5.1).
             self.parties = [owner[0]]
         else:
-            self.parties = engine.ledger.parties_for_name(txn.get("counterparty_name") or "")
-            if not self.parties:
-                self.parties = engine.ledger.parties_for_name(_payer_from_text(self.text))
-            if not self.parties:
-                # n43 puts the payer anywhere in the body ("92844359-AGUAS BLUE S.A.");
-                # the whole text is a worse name but a better net, and every consumer of
-                # a party here is gated on the amount adding up.
-                self.parties = engine.ledger.parties_for_name(self.text)
+            # The payer name hides in a different field per statement format: a column in
+            # camt.053, after "ABWA+" in a SEPA free text, after "TRANSFERENCIA DE" in an
+            # n43 body, between slashes in an MT940 "/ORDP/". Pool every reading instead
+            # of ranking the formats, and let the amount decide.
+            self.parties = []
+            seen_party: set[str] = set()
+            for candidate in (txn.get("counterparty_name") or "", *_payer_candidates(self.text), self.text):
+                if not candidate:
+                    continue
+                for party_id in engine.ledger.parties_for_name(candidate):
+                    if party_id not in seen_party:
+                        seen_party.add(party_id)
+                        self.parties.append(party_id)
+                if self.parties:
+                    break
         self.party = self.parties[0] if self.parties else ""
 
     def scope(self, ledger) -> list[str]:
@@ -563,13 +572,13 @@ _PAYER_MARKERS = (
 )
 
 
-def _payer_from_text(text: str) -> str:
-    """n43 lines put the payer in the body: 'TRANSFERENCIA DE <name>', 'ORD. <name>'."""
+def _payer_candidates(text: str) -> list[str]:
+    """Every substring of a bank text that could be the payer's name."""
+    out = []
     for marker in _PAYER_MARKERS:
         if marker in text:
-            tail = text.split(marker, 1)[1]
-            return tail.split("|")[0][:60]
-    return ""
+            out.append(text.split(marker, 1)[1].split("|")[0][:60])
+    return out
 
 
 def _close(a: int, b: int, pct: float = 0.01) -> bool:
