@@ -247,3 +247,6 @@ devenv.local.yaml
 /data/raw/
 /builds/
 /stages/
+
+# Claude Code worktrees are local scratch space
+.claude/worktrees/
