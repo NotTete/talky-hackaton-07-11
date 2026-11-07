@@ -37,6 +37,16 @@ BANK_CHARGE_MAX_EUR_CENTS = 6000
 # Countries whose customers withhold tax at source (§3).
 WITHHOLDING_COUNTRIES = {"MX", "BR", "MA"}
 
+# SEPA: inside it there is no intermediary bank to deduct a fee, so SHORT_BANK_CHARGES
+# cannot apply (§3 says "cross-border transfer from outside SEPA"). Without this test the
+# rule fires on every small shortfall and steals `ar_discount_late`, whose whole point is
+# that the difference is *not* explained and stays open.
+SEPA_COUNTRIES = {
+    "AT", "BE", "BG", "CH", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GB", "GI",
+    "GR", "HR", "HU", "IE", "IS", "IT", "LI", "LT", "LU", "LV", "MC", "MT", "NL", "NO",
+    "PL", "PT", "RO", "SE", "SI", "SK", "SM", "VA", "AD",
+}
+
 # Reasons an advice can state. Everything here is a *dispute*, not a discount: the
 # customer deducted it unilaterally and the rest of the invoice stays open.
 DISPUTE_WORDS = (
@@ -81,8 +91,15 @@ class Exceptions:
         reason: str = "",
         deduction: int = 0,
         forced: str = "",
+        alone: bool = False,
     ) -> tuple[str, int]:
-        """(exception, amount to submit in item currency) for one (line, item) row."""
+        """(exception, amount to submit in item currency) for one (line, item) row.
+
+        `alone` says this line settles exactly one item. `OVERPAYMENT` is defined that
+        way in §3 ("more than the open amount of **a single** invoice"); on a 95-item
+        batch an apparent excess is a rounding artefact of how the cash was shared, and
+        claiming the code there destroys the class's precision for no recall.
+        """
         if forced in {"RETURNED", "DUPLICATE_PAYMENT", "UNIDENTIFIED"}:
             return forced, abs(cash_cents) or abs(open_before)
 
@@ -98,7 +115,9 @@ class Exceptions:
 
         if shortfall < 0 and not _close(cash_cents, open_before):
             # §3: the invoice clears in full, the excess stays on the account.
-            return ("FX_DIFFERENCE" if cross_currency else "OVERPAYMENT"), open_before
+            if cross_currency:
+                return "FX_DIFFERENCE", open_before
+            return ("OVERPAYMENT" if alone else ""), open_before
 
         if _close(cash_cents, open_before):
             return ("FX_DIFFERENCE" if cross_currency else ""), open_before
@@ -142,14 +161,19 @@ class Exceptions:
     def _is_withholding(self, item: dict, shortfall: int) -> bool:
         """§3: 1.25 / 1.5 / 10 % of the invoice total, MX / BR / MA customers."""
         country = self.country.get(item.get("party_id") or "", "")
+        if country and country not in WITHHOLDING_COUNTRIES:
+            return False
         total = item["total_cents"]
-        for rate in WITHHOLDING_RATES:
-            if _close(shortfall, int(round(total * rate)), pct=0.01, floor=2):
-                return country in WITHHOLDING_COUNTRIES or not country
-        return False
+        return any(
+            _close(shortfall, int(round(total * rate)), pct=0.01, floor=2)
+            for rate in WITHHOLDING_RATES
+        )
 
     def _is_bank_charge(self, txn: dict, item: dict, shortfall: int) -> bool:
         """§3: a non-SEPA intermediary fee, <= 60 EUR equivalent and <= 2 % of the item."""
+        country = self.country.get(item.get("party_id") or "", "")
+        if not country or country in SEPA_COUNTRIES:
+            return False
         if shortfall > int(round(item["total_cents"] * BANK_CHARGE_MAX_PCT)):
             return False
         eur = self.fx.convert(shortfall, item.get("currency") or "EUR", "EUR", _ymd(txn.get("booking_date")))

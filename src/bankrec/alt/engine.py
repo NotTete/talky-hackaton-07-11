@@ -123,7 +123,12 @@ class Engine:
 
         category = self.cats.of(txn)
         self.stats[f"category:{category}"] = self.stats.get(f"category:{category}", 0) + 1
-        return [Row(category=category, exception="UNIDENTIFIED" if category == "UNIDENTIFIED" else "")]
+        # §3's UNIDENTIFIED is "a receipt for which no open item exists" -- an unknown
+        # payer. A receipt from a customer we *do* know, whose items we merely failed to
+        # pick, is a miss of ours; labelling it UNIDENTIFIED turns one lost line into a
+        # thousand false positives against a class that only has 218 true members.
+        unknown_payer = category == "UNIDENTIFIED" and not ctx.parties
+        return [Row(category=category, exception="UNIDENTIFIED" if unknown_payer else "")]
 
     def _accept(self, name: str, rows: list[Row]) -> list[Row]:
         self.stats[name] = self.stats.get(name, 0) + 1
@@ -401,7 +406,13 @@ class Engine:
             open_before = self.ledger.open_cents(item_id)
             if open_before <= 0:
                 # §3: already settled and paid again -> the *later* line is the duplicate.
-                if self.ledger.is_settled(item_id) and allow_duplicate:
+                if (
+                    self.ledger.is_settled(item_id)
+                    and allow_duplicate
+                    # §3: "the item had already been settled and is **paid again**" --
+                    # the cash has to look like the whole invoice, not like a remainder.
+                    and _close(abs(cents) or item["total_cents"], item["total_cents"])
+                ):
                     rows.append(Row(item_id, abs(cents) or item["total_cents"], "DUPLICATE_PAYMENT"))
                     continue
                 if ctx.is_return:
@@ -422,6 +433,7 @@ class Engine:
                 open_before=open_before,
                 reason=reason,
                 deduction=ctx.deductions.get(key, 0),
+                alone=len(unique) == 1,
             )
             # Invariant: a submitted amount is a positive integer number of cents in the
             # item currency (schema.validate_row). An over-applied ledger balance can
@@ -558,6 +570,10 @@ def _payer_from_text(text: str) -> str:
             tail = text.split(marker, 1)[1]
             return tail.split("|")[0][:60]
     return ""
+
+
+def _close(a: int, b: int, pct: float = 0.01) -> bool:
+    return abs(a - b) <= max(2, int(round(abs(b) * pct)))
 
 
 def _net(rows: list[Row], ledger: Ledger) -> int:
