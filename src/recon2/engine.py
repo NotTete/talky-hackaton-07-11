@@ -462,7 +462,10 @@ def _sample_carry(ph) -> dict[int, list]:
     if g.is_empty():
         return {}
     bt = pl.read_csv(DATA / "train" / "bank_transactions.csv.gz", columns=["bank_txn_id", "booking_date"])
-    g = g.join(bt, on="bank_txn_id", how="left").sort(["booking_date", "bank_txn_id", "item_id"])
+    # Strictly BEFORE the window by date (ids are not date-ordered across accounts: review HIGH 3).
+    from recon2.model import iso as _iso
+    g = (g.join(bt, on="bank_txn_id", how="left").filter(pl.col("booking_date") < _iso(start))
+         .sort(["booking_date", "bank_txn_id", "item_id"]))
     from recon2.model import day as _day
     hist: dict[int, list] = {}
     for txn, iid, amt, exc, bd in g.iter_rows():

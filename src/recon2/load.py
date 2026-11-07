@@ -118,19 +118,25 @@ def _carried(root: Path) -> pl.DataFrame | None:
     if not path.exists():
         return None
     o = _read(path)
-    tr = DATA / "train"
-    ar = _read(tr / "ar_invoices.csv.gz", ["item_id", "customer_name", "payment_terms", "payment_method", "customer_po"])
-    ap = _read(tr / "ap_invoices.csv.gz", ["item_id", "supplier_name", "payment_terms", "payment_method", "our_po"])
-    cn = _read(tr / "credit_notes.csv.gz", ["item_id", "party_name", "related_document"])
-    extra = pl.concat([
-        ar.select("item_id", pl.col("customer_name").alias("party_name"), pl.col("payment_terms").alias("terms"),
-                  pl.col("payment_method").alias("method"), pl.col("customer_po").alias("po"),
-                  pl.lit("").alias("related")),
-        ap.select("item_id", pl.col("supplier_name").alias("party_name"), pl.col("payment_terms").alias("terms"),
-                  pl.col("payment_method").alias("method"), pl.col("our_po").alias("po"), pl.lit("").alias("related")),
-        cn.select("item_id", "party_name", pl.lit("").alias("terms"), pl.lit("").alias("method"),
-                  pl.lit("").alias("po"), pl.col("related_document").alias("related")),
-    ]).unique("item_id", keep="first")
+    # FINAL carries items issued during LIVE: rejoin against every earlier phase's tables.
+    frames = []
+    for src in ("train", "live"):
+        tr = DATA / src
+        if tr == root or not (tr / "ar_invoices.csv.gz").exists():
+            continue
+        ar = _read(tr / "ar_invoices.csv.gz", ["item_id", "customer_name", "payment_terms", "payment_method", "customer_po"])
+        ap = _read(tr / "ap_invoices.csv.gz", ["item_id", "supplier_name", "payment_terms", "payment_method", "our_po"])
+        cn = _read(tr / "credit_notes.csv.gz", ["item_id", "party_name", "related_document"])
+        frames += [
+            ar.select("item_id", pl.col("customer_name").alias("party_name"), pl.col("payment_terms").alias("terms"),
+                      pl.col("payment_method").alias("method"), pl.col("customer_po").alias("po"),
+                      pl.lit("").alias("related")),
+            ap.select("item_id", pl.col("supplier_name").alias("party_name"), pl.col("payment_terms").alias("terms"),
+                      pl.col("payment_method").alias("method"), pl.col("our_po").alias("po"), pl.lit("").alias("related")),
+            cn.select("item_id", "party_name", pl.lit("").alias("terms"), pl.lit("").alias("method"),
+                      pl.lit("").alias("po"), pl.col("related_document").alias("related")),
+        ]
+    extra = pl.concat(frames).unique("item_id", keep="first", maintain_order=True)
     o = o.join(extra, on="item_id", how="left")
     return o.select(
         "item_id", "entity", "party_id", "party_name", pl.col("document_number").alias("doc"),
