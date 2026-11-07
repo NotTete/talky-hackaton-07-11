@@ -266,11 +266,69 @@ class Resolver:
             trace["ref"] = "AMOUNT_NO_FIT"
             return []
         h = self.fit_named(line, open_inv, cns, pset, tier)
+        if h is None or fit_level(self, line, h) < 2:
+            rem = self._named_plus(line, open_inv, cns, pset, tier)
+            if rem is not None:
+                return [rem]
         if h:
             hyps.append(h)
         else:
             trace["ref"] = "AMOUNT_NO_FIT"
         return hyps
+
+    def _unique_combo(self, pool: list[int], target: int, kmin: int, kmax: int, pref: set[int] = frozenset()) -> list[int] | None:
+        """Unique subset (kmin..kmax items of pool) with exact sum; a unique one inside pref wins."""
+        from itertools import combinations
+        it = self.items
+        if target <= 0 or len(pool) < kmin:
+            return None
+        pool = pool[:28]
+        vals = [it[i].open for i in pool]
+        sols, n = [], 0
+        for k in range(kmin, min(kmax, len(pool)) + 1):
+            for cb in combinations(range(len(pool)), k):
+                n += 1
+                if n > 40_000:
+                    return None
+                if sum(vals[x] for x in cb) == target:
+                    sols.append(cb)
+                    if len(sols) > 6:
+                        return None
+        if len(sols) == 1:
+            return [pool[x] for x in sols[0]]
+        if sols and pref:
+            pp = [cb for cb in sols if all(pool[x] in pref for x in cb)]
+            if len(pp) == 1:
+                return [pool[x] for x in pp[0]]
+        return None
+
+    def _named_plus(self, line: Line, inv: list[int], cns: list[int], pset: set[str], tier: int) -> Hyp | None:
+        """Named invoices do not cover the cash: add a unique subset (<=4) of the same party's other open items."""
+        it = self.items
+        if not pset or tier > 3:
+            return None
+        parties = {it[i].party_id for i in inv}
+        if len(parties) != 1 or not (parties & set(pset)):
+            return None
+        ccy = it[inv[0]].ccy
+        c = self.cash_in(line, ccy)
+        if c is None or c[1] != c[2]:
+            return None
+        gap = c[0] + sum(it[i].open for i in cns) - sum(it[i].open for i in inv)
+        if gap <= 0:
+            return None
+        inv_k, _ = side_kinds(line)
+        used = set(inv) | set(cns)
+        tails = [t for t in line.tokens if t.isdigit() and 4 <= len(t) <= 9]
+        pool = [i for i in self.book.open_of_party(next(iter(parties)), inv_k)
+                if i not in used and it[i].ccy == ccy and not it[i].residue and self.eligible(line, i)
+                and 0 <= line.day - it[i].issue <= 730]
+        pool.sort(key=lambda i: (it[i].due, it[i].issue, it[i].item_id))
+        pref = {i for i in pool if any(_alnum(it[i].doc).startswith(t) or t in _alnum(it[i].doc) for t in tails)}
+        pick = self._unique_combo(pool, gap, 1, 4, pref)
+        if pick is None:
+            return None
+        return Hyp("ref.rem", tier, list(inv) + pick, list(cns), note="rem")
 
     def fit_named(self, line: Line, inv: list[int], cns: list[int], pset: set[str], tier: int) -> Hyp | None:
         it = self.items
@@ -485,6 +543,22 @@ class Resolver:
                     ov.append(i)
         if len(ov) == 1:
             return [Hyp("party.over", 4, ov, note="over")]
+        # known party, no usable reference: unique 2-4 subset inside a 2-year window
+        for p in plist:
+            if p in child:
+                continue
+            pl = [i for i in self.book.open_of_party(p, inv_k) if self.eligible(line, i) and not it[i].residue
+                  and 0 <= line.day - it[i].issue <= 730]
+            if len(pl) < 2 or len(pl) > 28:
+                continue
+            for ccy in sorted({it[i].ccy for i in pl}):
+                c = self.cash_in(line, ccy)
+                if c is None or c[1] != c[2]:
+                    continue
+                cc = sorted((i for i in pl if it[i].ccy == ccy), key=lambda i: (it[i].due, it[i].issue, it[i].item_id))
+                pick = self._unique_combo(cc, c[0], 2, 4)
+                if pick is not None:
+                    return [Hyp("party.uniq", 5, pick, note="uniq")]
         trace["party"] = "AMOUNT_NO_FIT"
         return []
 
