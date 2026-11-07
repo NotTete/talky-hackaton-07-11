@@ -10,6 +10,7 @@ from recon2.model import Line
 _DROP = re.compile(r"[^A-Z0-9 ./+\-]")
 _WS = re.compile(r"\s+")
 _SPLIT = re.compile(r"[\s/+:;,()\[\]|]+")
+_NOSLASH_SPLIT = re.compile(r"[\s+:;,()\[\]|]+")
 _GLUED = re.compile(r"[A-Z]{0,6}\d{4,}")
 _PREFIXED = re.compile(r"^([A-Z]+)(\d+)$")
 _LONGPRE = re.compile(r"^([A-Z]{5,})(\d{4,}[A-Z0-9]*)$")
@@ -56,6 +57,13 @@ def tokens_of(*fields: str) -> tuple[str, ...]:
         for x in _SPLIT.split(fold(field)):
             if "-" in x or "." in x:
                 pieces.extend(p for p in re.split(r"[-.]", x) if p)
+        # slash document numbers ('F25/04150', 'AB-F25/03319', '2025/00036') must also exist
+        # joined: '/' is a separator above (MT940 /ORDP/ fields), which cut 749/772 visible refs.
+        for x in _NOSLASH_SPLIT.split(fold(field)):
+            if "/" in x.strip("/"):
+                for seg in (x.strip("/"),) + tuple(x.strip("/").split("/")[i] + x.strip("/").split("/")[i + 1]
+                                                   for i in range(x.strip("/").count("/"))):
+                    pieces.append(_alnum(seg))
         for w in words + pieces:
             if _reflike(w):
                 out.add(w)
