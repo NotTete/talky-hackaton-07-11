@@ -12,4 +12,4 @@ phase = "sample"
 # Item tables to load. sample -> ["sample"]; live -> ["train", "live"].
 item_phases = ["sample"]
 # Use PDF facts as extra evidence (build them first: `bankrec pdf-facts --phase sample`).
-use_pdf_facts = false
+use_pdf_facts = true

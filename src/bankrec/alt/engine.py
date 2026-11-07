@@ -63,6 +63,10 @@ REVERSAL_WORDS = ("OPERACION INDEBIDA", "OPERACIÓN INDEBIDA", "ANULACION OPERAC
 # ... and a *credit* that says "devolución" is usually the opposite of a return: the
 # customer sending back the guarantee retention, or re-paying a receipt that bounced.
 # A collection that came back is always a debit.
+RELEASE_WORDS = (
+    "RETENTION RELEASE", "LIBERACION RETENCION", "LIBERACIÓN RETENCIÓN", "RET. GARANTIA",
+    "DEVOLUCION GARANTIA", "DEVOLUCIÓN GARANTÍA", "LIBERACION GARANTIA", "FREIGABE EINBEHALT",
+)
 NOT_RETURN_WORDS = ("GARANTIA", "GARANTÍA", "RETENCION", "RETENCIÓN", "RETENTION")
 
 
@@ -553,6 +557,20 @@ class Engine:
         aggregated operation, which arrives as its own bank line with its own document."""
         return str(self.ledger.item(item_id).get("payment_method") or "") in TRANSFER_METHODS
 
+    def _retention_ok(self, item: dict) -> bool:
+        """A release needs a retention to release: the PDF says so (or there is no PDF)."""
+        return self.pdf is None or not self.pdf.clauses_for_item(item) or self.pdf.has(item, "retention")
+
+    def _is_final_instalment(self, item: dict, cash_cents: int) -> bool:
+        """The PDF lists the instalment plan and this cash is exactly its last, distinct one."""
+        if self.pdf is None:
+            return False
+        for clause in self.pdf.clauses_for_item(item):
+            plan = clause.get("amounts") or []
+            if clause.get("code") == "instalments" and len(plan) > 1 and plan[-1] != plan[0]:
+                return cash_cents == plan[-1]
+        return False
+
     def _opens(self, item_ids: list[str], ctx: _Context) -> dict[str, int]:
         """Open balances of these items, all expressed in the bank line's currency."""
         return {i: self._in_currency(i, ctx.currency, ctx.ymd) for i in item_ids}
@@ -646,6 +664,8 @@ class Engine:
                 reason=reason,
                 deduction=ctx.deductions.get(key, 0),
                 alone=len(unique) == 1,
+                final_instalment=self._is_final_instalment(item, cash),
+                retention_release=_hit(ctx.text, RELEASE_WORDS) and self._retention_ok(item),
             )
             # Invariant: a submitted amount is a positive integer number of cents in the
             # item currency (schema.validate_row). An over-applied ledger balance can

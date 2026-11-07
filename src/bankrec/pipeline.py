@@ -70,8 +70,14 @@ def process(
 
         pdf_facts = load_pdf_facts(phase)
         if len(pdf_facts) == 0:
-            print(f"[{phase.name}] no pdf facts cache: run `bankrec pdf-facts --phase {phase.name}`", file=sys.stderr)
-            pdf_facts = None
+            # No cache yet: build it (seconds, parallel) rather than silently scoring
+            # without evidence the settings ask for.
+            from .pdf.build import build_phase
+
+            pdf_facts, _ = build_phase(phase)
+            if len(pdf_facts) == 0:
+                print(f"[{phase.name}] no PDFs to read: running without pdf facts", file=sys.stderr)
+                pdf_facts = None
     context = DocumentContext(phase)
     advices = AdviceIndex(load_advices(phase))
     document_report = structure(phase, context, advices.advices)

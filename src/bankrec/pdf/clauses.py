@@ -126,6 +126,8 @@ def extract(text: str) -> list[dict]:
                 if amounts:
                     clause["amount"] = amounts[0]
                 if code == "instalments":
+                    if len(amounts) > 1:
+                        clause["amounts"] = amounts  # the plan, in order: the last one closes it
                     count = re.search(r"(\d)\s*(?:instalments|vencimientos|plazos|raten|échéances)", low)
                     clause["count"] = int(count.group(1)) if count else 0
             elif code in {"credit_note", "rappel"}:

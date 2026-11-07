@@ -52,7 +52,7 @@ class Settings:
     item_phases: list[str] = field(default_factory=lambda: ["sample"])
     # Use the PDF facts cache as extra evidence in the engine (`bankrec pdf-facts`).
     # Off by default: facts can only be trusted once they have been built and inspected.
-    use_pdf_facts: bool = False
+    use_pdf_facts: bool = True
 
     @property
     def phase_dir(self) -> Path:
@@ -82,7 +82,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
         builds_dir=builds,
         phase=run.get("phase", "sample"),
         item_phases=list(run.get("item_phases", ["sample"])),
-        use_pdf_facts=bool(run.get("use_pdf_facts", False)),
+        use_pdf_facts=bool(run.get("use_pdf_facts", True)),
     )
 
     if env := os.environ.get("BANKREC_DATA"):

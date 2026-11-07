@@ -95,6 +95,8 @@ class Exceptions:
         deduction: int = 0,
         forced: str = "",
         alone: bool = False,
+        final_instalment: bool = False,
+        retention_release: bool = False,
     ) -> tuple[str, int]:
         """(exception, amount to submit in item currency) for one (line, item) row.
 
@@ -135,6 +137,11 @@ class Exceptions:
             return ("FX_DIFFERENCE" if cross_currency else "SHORT_BANK_CHARGES"), open_before
         if reason and self._is_dispute(reason):
             return "SHORT_DISPUTE", cash_cents
+        if final_instalment or retention_release:
+            # POLICIES §3: the *last* instalment of a plan and the release of a retention
+            # are paid as documented, even when our balance is stale (an earlier payment
+            # never matched, or the retention was never booked as a partial).
+            return "", cash_cents
         return "PARTIAL", cash_cents
 
     # -------------------------------------------------------------- helpers
