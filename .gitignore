@@ -251,3 +251,4 @@ devenv.local.yaml
 # Claude Code worktrees are local scratch space
 .claude/worktrees/
 artifacts/cache/
+out/
