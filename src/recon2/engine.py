@@ -200,7 +200,7 @@ class Engine:
         if tv is not None and ph.lines and not ph.lines[0].t_join:
             for ln in ph.lines:
                 tv.build(ln)
-        carry_hist = _sample_carry(ph) if phase_name == "sample" and not os.environ.get("RECON2_NO_CARRY") else {}
+        carry_hist = _sample_carry(ph) if (phase_name == "sample" or phase_name.startswith("train:")) and not os.environ.get("RECON2_NO_CARRY") else {}
         bookm = _try("book")
         self.book = bookm.Book(ph.items, ph.masters) if bookm else StubBook(ph.items, ph.masters)
         for i, h in carry_hist.items():
@@ -419,9 +419,30 @@ class Engine:
         return d
 
     def run(self) -> list[Decision]:
+        import sys
         t = time.perf_counter()
-        out = [self.line(ln) for ln in self.phase.lines]
+        lines = self.phase.lines
+        n = len(lines)
+        every = int(os.environ.get("RECON2_PROGRESS", "5000"))
+        out: list[Decision] = []
+        last, slow = t, []
+        for i, ln in enumerate(lines):
+            t1 = time.perf_counter()
+            out.append(self.line(ln))
+            dt = time.perf_counter() - t1
+            if dt > 1.0:  # progress/diagnostics only; never affects output
+                slow.append((dt, ln.txn))
+                print(f"[recon2] SLOW {dt:.1f}s {ln.txn} cash={ln.cash} text={ln.text[:60]!r}", file=sys.stderr, flush=True)
+            if every and (i + 1) % every == 0:
+                now = time.perf_counter()
+                items = sum(1 for d in out[-every:] if d.allocs)
+                print(f"[recon2] progress {i+1}/{n} ({100*(i+1)/n:.0f}%) elapsed={now-t:.0f}s "
+                      f"rate={every/max(now-last,1e-9):.0f} l/s items={items}/{every} states={self.res.states}",
+                      file=sys.stderr, flush=True)
+                last = now
         self.timings["match"] = time.perf_counter() - t
+        if slow:
+            print(f"[recon2] {len(slow)} slow lines, worst {max(slow)[0]:.1f}s", file=sys.stderr, flush=True)
         return out
 
 

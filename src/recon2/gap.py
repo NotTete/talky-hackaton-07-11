@@ -74,7 +74,8 @@ def classify(g: dict, s: dict, tr: dict) -> tuple[str, int, int]:
 
 
 def report(phase: str, sub: Path, trace_path: Path, top: int = 25) -> str:
-    gold = _read(DATA / phase / "golden_allocations.csv.gz")
+    from recon2.__main__ import phase_files
+    gold = _read(phase_files(phase)[0])
     subm = _read(sub)
     trs = T.read(trace_path) if Path(trace_path).exists() else {}
     n = len(gold)

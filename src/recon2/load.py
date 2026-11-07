@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import os
+from datetime import date, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -168,8 +170,11 @@ def _items(root: Path) -> list[Item]:
     return out
 
 
-def _lines(root: Path) -> list[Line]:
-    df = _read(root / "bank_transactions.csv.gz").fill_null("").sort(["booking_date", "bank_txn_id"])
+def _lines(root: Path, lo: str | None = None, hi: str | None = None) -> list[Line]:
+    df = _read(root / "bank_transactions.csv.gz").fill_null("")
+    if lo:
+        df = df.filter((pl.col("booking_date") >= lo) & (pl.col("booking_date") <= hi))
+    df = df.sort(["booking_date", "bank_txn_id"])
     names = ["bank_txn_id", "account_id", "entity", "bank", "statement_format", "booking_date", "value_date",
              "amount", "currency", "bank_code", "bank_subcode", "ref1", "ref2", "text", "counterparty_name",
              "counterparty_account", "end_to_end_id", "remittance_info", "orig_amount", "orig_currency"]
@@ -187,7 +192,46 @@ def _lines(root: Path) -> list[Line]:
     return out
 
 
+CLOSED_ON = Path(os.environ.get("RECON2_CLOSED_ON",
+                                "/home/tete/.claude/jobs/253f644d/tmp/verifier/full_item_closed_on.parquet"))
+
+
+def train_window(name: str) -> tuple[str, str]:
+    """'train:2025-05' -> ('2025-05-01', '2025-05-31'); 'train:2025-03:2025-05' -> range."""
+    parts = name.split(":")[1:]
+    lo, hi = parts[0], parts[-1]
+    y, m = int(hi[:4]), int(hi[5:7])
+    last = (date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)).isoformat()
+    return lo + "-01", last
+
+
+def _load_train_window(name: str) -> Phase:
+    """Dev/eval phase cut out of TRAIN (golden available).  Items = issued <= window end and
+    not closed more than 60 days before the window starts — the shape of LIVE's carry-over
+    book.  Balances are replayed from golden by the engine (same as the sample)."""
+    lo, hi = train_window(name)
+    root = DATA / "train"
+    masters = load_masters(DATA / "masters")
+    lines = [ln for ln in _lines(root, lo, hi)]
+    for i, ln in enumerate(lines):
+        ln.idx = i
+    keep = None
+    if CLOSED_ON.exists():
+        floor = (date.fromisoformat(lo) - timedelta(days=60))
+        c = pl.read_parquet(CLOSED_ON).filter(pl.col("closed_on") < floor)
+        keep = set(c["item_id"].to_list())  # items to DROP
+    items = [it for it in _items(root) if it.issue <= day(hi) and (keep is None or it.item_id not in keep)]
+    for i, it in enumerate(items):
+        it.idx = i
+    g = _read(root / "golden_allocations.csv.gz")
+    txns = [ln.txn for ln in lines]
+    golden = g.filter(pl.col("bank_txn_id").is_in(txns))
+    return Phase(name, root, lines, items, masters, golden)
+
+
 def load_phase(name: str) -> Phase:
+    if name.startswith("train:"):
+        return _load_train_window(name)
     if name not in PHASES:
         raise ValueError(f"unknown phase {name!r}")
     root = DATA / name

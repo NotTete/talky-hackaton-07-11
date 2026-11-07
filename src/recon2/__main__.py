@@ -32,13 +32,34 @@ def categories() -> list[str]:
         return [r[col] for r in rd]
 
 
+def phase_files(phase: str) -> tuple[Path, Path]:
+    """(golden, bank_transactions) for a phase; TRAIN windows get filtered copies under out/."""
+    if not phase.startswith("train:"):
+        return DATA / phase / "golden_allocations.csv.gz", DATA / phase / "bank_transactions.csv.gz"
+    import polars as pl
+    from recon2.load import train_window
+    lo, hi = train_window(phase)
+    d = OUT / phase.replace(":", "_")
+    g, b = d / "golden_allocations.csv.gz", d / "bank_transactions.csv.gz"
+    if not g.exists():
+        d.mkdir(parents=True, exist_ok=True)
+        bt = pl.read_csv(DATA / "train" / "bank_transactions.csv.gz", infer_schema_length=0)
+        bt = bt.filter((pl.col("booking_date") >= lo) & (pl.col("booking_date") <= hi))
+        gd = pl.read_csv(DATA / "train" / "golden_allocations.csv.gz", infer_schema_length=0)
+        gd = gd.filter(pl.col("bank_txn_id").is_in(bt["bank_txn_id"].to_list()))
+        for df, p in ((bt, b), (gd, g)):
+            with gzip.open(p, "wb") as f:
+                df.write_csv(f)
+    return g, b
+
+
 def score(phase: str, path: Path) -> dict | None:
-    g = DATA / phase / "golden_allocations.csv.gz"
+    g, b = phase_files(phase)
     if not g.exists():
         return None
     from recon2.writer import EXCEPTIONS
     sc = scorer()
-    gold = sc.load_golden(str(g), str(DATA / phase / "bank_transactions.csv.gz"), sorted(EXCEPTIONS), categories())
+    gold = sc.load_golden(str(g), str(b), sorted(EXCEPTIONS), categories())
     return sc.score_submission(gold, path.read_bytes(), path.name)
 
 
