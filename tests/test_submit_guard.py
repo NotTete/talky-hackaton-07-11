@@ -46,15 +46,21 @@ def test_describe_counts_decompressed_rows(payload):
 def test_aborts_without_a_terminal(monkeypatch, payload):
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     with pytest.raises(SystemExit) as exc:
-        submit_mod._gate("LIVE", describe(payload))
+        submit_mod._gate("FINAL", describe(payload))
     assert "refusing to submit" in str(exc.value)
+
+
+def test_live_has_no_confirmation_step(monkeypatch, payload):
+    """Owner decision 2026-11-07: LIVE uploads without a typed phrase (FINAL keeps the gate)."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    submit_mod._gate("LIVE", describe(payload))  # must not raise, even without a TTY
 
 
 def test_aborts_on_wrong_answer(monkeypatch, payload):
     monkeypatch.setattr(sys, "stdin", io.StringIO("yes\n"))
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
     with pytest.raises(SystemExit) as exc:
-        submit_mod._gate("LIVE", describe(payload))
+        submit_mod._gate("FINAL", describe(payload))
     assert "aborted" in str(exc.value)
 
 
@@ -76,7 +82,7 @@ def test_never_calls_the_network_without_confirmation(monkeypatch, payload):
     monkeypatch.setattr(submit_mod, "_post_json", boom)
     monkeypatch.setattr(submit_mod, "_get_json", boom)
     with pytest.raises(SystemExit):
-        submit("LIVE", payload)
+        submit("FINAL", payload)
 
 
 # ---------------------------------------------------------------------------

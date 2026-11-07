@@ -275,6 +275,13 @@ def _gate(phase: str, info: dict) -> None:
     sys.stderr.write("\n".join(lines))
     sys.stderr.flush()
 
+    # Owner decision (2026-11-07): LIVE uploads without a typed confirmation (repeatable,
+    # owner asked to remove the step). FINAL is one shot and keeps the human gate below.
+    if phase == "LIVE":
+        sys.stderr.write("LIVE (no confirmation step)\n")
+        sys.stderr.flush()
+        return
+
     # No TTY means no person can be shown the summary -> no submission. Ever.
     if not sys.stdin.isatty():
         raise SystemExit(

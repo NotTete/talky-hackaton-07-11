@@ -254,6 +254,10 @@ reaches the server.
 
 ### 15.1 The human gate on uploading (non-negotiable)
 
+> **Amended 2026-11-07 by the owner:** LIVE uploads no longer ask for a typed
+> confirmation (`_gate` returns immediately for LIVE; pinned by
+> `test_live_has_no_confirmation_step`). Everything below still applies to **FINAL**.
+
 **A human always confirms before anything is uploaded. Always. No exceptions, and no
 escape hatch.** `bankrec/submit.py` prints the phase, the file, the row count and the
 sha256 of the *decompressed* CSV, then waits for the operator to type `LIVE` — or
